@@ -10,7 +10,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any, Protocol, runtime_checkable
 
-from .models import SnapshotKey
+from .models import DiffRenderResult, SnapshotKey
 
 
 class Serializer(Protocol):
@@ -61,3 +61,15 @@ class DiffRenderer(Protocol):
     """Protocol for renderers that explain snapshot mismatches."""
 
     def render(self, expected: str, actual: str) -> str: ...
+
+
+@runtime_checkable
+class DiffRendererWithMetadata(DiffRenderer, Protocol):
+    """Extended diff renderer that also provides render metadata.
+
+    Implementations return a ``DiffRenderResult`` carrying the rendered text
+    together with the effective diff mode and an optional fallback reason.
+    The base ``render`` method is still required for backwards compatibility.
+    """
+
+    def render_with_metadata(self, expected: str, actual: str) -> DiffRenderResult: ...

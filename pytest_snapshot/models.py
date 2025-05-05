@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from enum import Enum
 from pathlib import Path
 
 
@@ -26,6 +25,7 @@ class AssertionDiagnostics:
     sanitizer_names: tuple[str, ...]
     sanitizer_profile: str
     diff_mode: str
+    sanitizer_counts: dict[str, int] | None = None
     effective_diff_mode: str | None = None
     diff_fallback_reason: str | None = None
     snapshot_path: Path | None = None
@@ -50,23 +50,6 @@ class DiffRenderResult:
     text: str
     mode: str
     fallback_reason: str | None = None
-
-
-@dataclass(frozen=True, slots=True)
-class SnapshotRecord:
-    """Represents a stored snapshot (key + serialized content)."""
-
-    key: SnapshotKey
-    content: str
-
-
-class SnapshotResult(Enum):
-    """Outcome of a snapshot comparison."""
-
-    MATCH = "match"
-    MISMATCH = "mismatch"
-    CREATED = "created"
-    UPDATED = "updated"
 
 
 @dataclass(frozen=True, slots=True)
