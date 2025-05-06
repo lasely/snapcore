@@ -1,6 +1,8 @@
 from .registry import SanitizerRegistry
 from .builtins import UuidSanitizer, DatetimeSanitizer, PathSanitizer
+from .profiles import load_profile_sanitizers
 from .relational import (
+    MultiPatternRelationalSanitizer,
     RelationalSanitizer,
     RelationalUuidSanitizer,
     RelationalDatetimeSanitizer,
@@ -12,6 +14,8 @@ __all__ = [
     "UuidSanitizer",
     "DatetimeSanitizer",
     "PathSanitizer",
+    "load_profile_sanitizers",
+    "MultiPatternRelationalSanitizer",
     "RelationalSanitizer",
     "RelationalUuidSanitizer",
     "RelationalDatetimeSanitizer",

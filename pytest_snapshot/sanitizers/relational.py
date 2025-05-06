@@ -104,60 +104,75 @@ class RelationalUuidSanitizer(RelationalSanitizer):
         super().__init__("UUID", _UUID_V4_PATTERN, normalize=str.lower)
 
 
-class RelationalDatetimeSanitizer:
-    """Replace datetimes with numbered placeholders preserving identity."""
+class MultiPatternRelationalSanitizer(RelationalSanitizer):
+    """Relational sanitizer that applies multiple patterns in priority order.
 
-    name = "datetime_relational"
+    All patterns share a single identity mapping and counter, so the same
+    raw value always gets the same number regardless of which pattern
+    matched it.  Each pattern can produce its own label in the placeholder.
+
+    Subclasses define ``_patterns`` as a sequence of ``(compiled_regex, label)``
+    tuples.  Patterns are applied in order (most-specific first).
+    Subclasses must also override the ``name`` property.
+    """
+
+    _patterns: tuple[tuple[re.Pattern[str], str], ...] = ()
 
     def __init__(self) -> None:
         self._mapping: dict[str, int] = {}
         self._counter: int = 0
+        self._normalize: Callable[[str], str] | None = None
+
+    @property
+    def name(self) -> str:
+        raise NotImplementedError("Subclasses must define a name property")
 
     def sanitize(self, text: str) -> str:
-        def _replace_datetime(match: re.Match[str]) -> str:
-            value = match.group(0)
-            if value not in self._mapping:
-                self._counter += 1
-                self._mapping[value] = self._counter
-            return f"<DATETIME:{self._mapping[value]}>"
-
-        def _replace_date(match: re.Match[str]) -> str:
-            value = match.group(0)
-            if value not in self._mapping:
-                self._counter += 1
-                self._mapping[value] = self._counter
-            return f"<DATE:{self._mapping[value]}>"
-
-        text = _DATETIME_FULL_PATTERN.sub(_replace_datetime, text)
-        text = _DATE_ONLY_PATTERN.sub(_replace_date, text)
+        for pattern, label in self._patterns:
+            text = pattern.sub(self._make_replacer(label), text)
         return text
 
-    def reset(self) -> None:
-        self._mapping.clear()
-        self._counter = 0
-
-
-class RelationalPathSanitizer:
-    """Replace absolute paths with numbered placeholders preserving identity."""
-
-    name = "path_relational"
-
-    def __init__(self) -> None:
-        self._mapping: dict[str, int] = {}
-        self._counter: int = 0
-
-    def sanitize(self, text: str) -> str:
+    def _make_replacer(self, label: str) -> Callable[[re.Match[str]], str]:
         def _replace(match: re.Match[str]) -> str:
-            path_value = match.group(0)
-            if path_value not in self._mapping:
+            value = match.group(0)
+            key = self._normalize(value) if self._normalize else value
+            if key not in self._mapping:
                 self._counter += 1
-                self._mapping[path_value] = self._counter
-            return f"<PATH:{self._mapping[path_value]}>"
+                self._mapping[key] = self._counter
+            return f"<{label}:{self._mapping[key]}>"
+        return _replace
 
-        text = _WINDOWS_PATH_PATTERN.sub(_replace, text)
-        text = _UNIX_PATH_PATTERN.sub(_replace, text)
-        return text
 
-    def reset(self) -> None:
-        self._mapping.clear()
-        self._counter = 0
+class RelationalDatetimeSanitizer(MultiPatternRelationalSanitizer):
+    """Replace datetimes with numbered placeholders preserving identity.
+
+    Full datetime patterns are applied before date-only patterns so that
+    ``2024-01-15T10:30:00Z`` is consumed whole instead of partially matching
+    the date-only regex.
+    """
+
+    _patterns = (
+        (_DATETIME_FULL_PATTERN, "DATETIME"),
+        (_DATE_ONLY_PATTERN, "DATE"),
+    )
+
+    @property
+    def name(self) -> str:
+        return "datetime_relational"
+
+
+class RelationalPathSanitizer(MultiPatternRelationalSanitizer):
+    """Replace absolute paths with numbered placeholders preserving identity.
+
+    Windows paths are matched first because their backslash separators are
+    more specific than the ``/`` separator in Unix paths.
+    """
+
+    _patterns = (
+        (_WINDOWS_PATH_PATTERN, "PATH"),
+        (_UNIX_PATH_PATTERN, "PATH"),
+    )
+
+    @property
+    def name(self) -> str:
+        return "path_relational"

@@ -28,13 +28,18 @@ class SanitizerRegistry:
         """
         return self.apply_with_diagnostics(text)[0]
 
-    def apply_with_diagnostics(self, text: str) -> tuple[str, list[str]]:
-        """Apply sanitizers and return the resulting text plus sanitizer names."""
+    def apply_with_diagnostics(
+        self, text: str,
+    ) -> tuple[str, list[str], dict[str, int]]:
+        """Apply sanitizers and return text, names, and per-sanitizer replacement counts."""
         applied: list[str] = []
+        counts: dict[str, int] = {}
         for sanitizer in self._chain:
+            before = text
             text = sanitizer.sanitize(text)
             applied.append(sanitizer.name)
-        return text, applied
+            counts[sanitizer.name] = 0 if text == before else _count_changes(before, text)
+        return text, applied, counts
 
     def reset_stateful(self) -> None:
         """Reset all stateful sanitizers (those with a reset() method).
@@ -54,3 +59,15 @@ class SanitizerRegistry:
     def list(self) -> list[str]:
         """Return sanitizer names in application order."""
         return [s.name for s in self._chain]
+
+
+def _count_changes(before: str, after: str) -> int:
+    """Estimate the number of replacements made by a sanitizer.
+
+    Uses difflib SequenceMatcher to count contiguous changed regions,
+    which closely approximates per-replacement counts.
+    """
+    import difflib
+
+    matcher = difflib.SequenceMatcher(None, before, after, autojunk=False)
+    return sum(1 for tag, *_ in matcher.get_opcodes() if tag != "equal")
