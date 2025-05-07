@@ -19,11 +19,13 @@ from .policy import (
     build_repr_fallback_blocked_finding,
     build_repr_fallback_warning_finding,
 )
-from .protocols import DiffRenderer, StorageBackend
+from .protocols import DiffRenderer, DiffRendererWithMetadata, StorageBackend
 from .sanitizers import SanitizerRegistry
+from .sanitizers.json_masks import JsonMaskApplicator
 from .serializers import SerializerRegistry
 
 if TYPE_CHECKING:
+    from .alignment.registry import AlignmentRegistry
     from .review.collector import SnapshotCollector
 
 
@@ -49,6 +51,7 @@ class AssertionRuntime:
         differ: DiffRenderer,
         *,
         collector: SnapshotCollector | None = None,
+        json_mask_applicator: JsonMaskApplicator | None = None,
     ) -> None:
         self._config = config
         self._serializer_registry = serializer_registry
@@ -56,6 +59,7 @@ class AssertionRuntime:
         self._storage = storage
         self._differ = differ
         self._collector = collector
+        self._json_mask_applicator = json_mask_applicator
 
     def prepare(self, *, key: SnapshotKey, value: Any) -> PreparedAssertion:
         """Serialize, sanitize, and annotate a value for snapshot comparison."""
@@ -83,8 +87,12 @@ class AssertionRuntime:
         )
 
         actual = serializer.serialize(value)
+        if self._json_mask_applicator is not None and serializer.name == "json":
+            actual = self._json_mask_applicator.apply(actual)
         self._sanitizer_registry.reset_stateful()
-        actual, sanitizer_names = self._sanitizer_registry.apply_with_diagnostics(actual)
+        actual, sanitizer_names, sanitizer_counts = (
+            self._sanitizer_registry.apply_with_diagnostics(actual)
+        )
 
         diagnostics = AssertionDiagnostics(
             serializer_name=serializer.name,
@@ -94,6 +102,7 @@ class AssertionRuntime:
             sanitizer_names=tuple(sanitizer_names),
             sanitizer_profile=self._config.sanitizer_profile,
             diff_mode=self._config.diff_mode,
+            sanitizer_counts=sanitizer_counts or None,
             snapshot_path=snapshot_path,
         )
         return PreparedAssertion(
@@ -109,9 +118,13 @@ class AssertionRuntime:
         expected: str,
         actual: str,
         diagnostics: AssertionDiagnostics,
+        alignment_registry: AlignmentRegistry | None = None,
     ) -> tuple[str, AssertionDiagnostics]:
         """Render a diff and merge the render metadata into diagnostics."""
-        diff_result = self._render_diff(expected=expected, actual=actual)
+        diff_result = self._render_diff(
+            expected=expected, actual=actual,
+            alignment_registry=alignment_registry,
+        )
         return diff_result.text, AssertionDiagnostics(
             serializer_name=diagnostics.serializer_name,
             serializer_priority=diagnostics.serializer_priority,
@@ -120,6 +133,7 @@ class AssertionRuntime:
             sanitizer_names=diagnostics.sanitizer_names,
             sanitizer_profile=diagnostics.sanitizer_profile,
             diff_mode=diagnostics.diff_mode,
+            sanitizer_counts=diagnostics.sanitizer_counts,
             effective_diff_mode=diff_result.mode,
             diff_fallback_reason=diff_result.fallback_reason,
             snapshot_path=diagnostics.snapshot_path,
@@ -184,11 +198,22 @@ class AssertionRuntime:
             return
         self._collector.record_snapshot(key, snapshot_path)
 
-    def _render_diff(self, *, expected: str, actual: str) -> DiffRenderResult:
+    def _render_diff(
+        self,
+        *,
+        expected: str,
+        actual: str,
+        alignment_registry: AlignmentRegistry | None = None,
+    ) -> DiffRenderResult:
         """Render a diff using metadata-aware renderer APIs when available."""
-        render_with_metadata = getattr(self._differ, "render_with_metadata", None)
-        if callable(render_with_metadata):
-            return render_with_metadata(expected, actual)
+        from .diff.structural import StructuralDiffRenderer
+
+        if isinstance(self._differ, StructuralDiffRenderer) and alignment_registry is not None:
+            return self._differ.render_with_metadata(
+                expected, actual, alignment_registry=alignment_registry,
+            )
+        if isinstance(self._differ, DiffRendererWithMetadata):
+            return self._differ.render_with_metadata(expected, actual)
         return DiffRenderResult(
             text=self._differ.render(expected=expected, actual=actual),
             mode=self._config.diff_mode,

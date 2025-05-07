@@ -6,7 +6,7 @@ from dataclasses import dataclass
 from typing import Any
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, slots=True)
 class ValueChanged:
     """Value changed while retaining the same type."""
 
@@ -15,7 +15,7 @@ class ValueChanged:
     new_value: Any
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, slots=True)
 class KeyAdded:
     """Key added to dict or element added to list."""
 
@@ -23,7 +23,7 @@ class KeyAdded:
     value: Any
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, slots=True)
 class KeyRemoved:
     """Key removed from dict or element removed from list."""
 
@@ -31,7 +31,7 @@ class KeyRemoved:
     value: Any
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, slots=True)
 class TypeChanged:
     """Value type changed (e.g. str -> int)."""
 

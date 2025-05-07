@@ -2,19 +2,43 @@
 
 The renderer prefers semantic change descriptions for dictionaries and lists
 while retaining a unified text diff as a fallback or detailed appendix.
+
+When an ``AlignmentRegistry`` is active, list nodes whose path matches a
+registered rule are aligned by identity key (via ``align_lists``) instead
+of falling through to LCS or index-based comparison.  Matched pairs are
+recursed into; unmatched elements are reported as additions / removals
+annotated with the entity's key values for clear diagnostics.
 """
 
 from __future__ import annotations
 
 import json
-from typing import Any
+from typing import Any, TYPE_CHECKING
 
+from ..alignment.executor import align_lists
+from ..alignment.paths import generalize_brackets, generalize_indices, normalize_path
 from ..models import DiffRenderResult
 from .changes import Change, KeyAdded, KeyRemoved, TypeChanged, ValueChanged
 from .lcs import compute_lcs_indices
 from .text import TextDiffRenderer
 
+if TYPE_CHECKING:
+    from ..alignment.models import AlignmentResult
+    from ..alignment.registry import AlignmentRegistry
+
 _LCS_LIST_THRESHOLD = 50
+
+
+def _unwrap_display_value(value: Any) -> Any:
+    """Unwrap type-safety wrappers used in AlignmentKey values for display.
+
+    The executor wraps booleans as ``("__bool__", True/False)`` to prevent
+    hash collisions with integers.  This function strips that wrapper so
+    labels render as ``flag=True`` rather than ``flag=('__bool__', True)``.
+    """
+    if isinstance(value, tuple) and len(value) == 2 and value[0] == "__bool__":
+        return value[1]
+    return value
 
 
 class StructuralDiffRenderer:
@@ -28,13 +52,28 @@ class StructuralDiffRenderer:
     ) -> None:
         self._text_fallback = text_fallback or TextDiffRenderer()
         self._value_truncate_length = value_truncate_length
+        self._alignment_registry: AlignmentRegistry | None = None
 
     def render(self, expected: str, actual: str) -> str:
         """Return the formatted structural diff text for two serialized values."""
         return self.render_with_metadata(expected, actual).text
 
-    def render_with_metadata(self, expected: str, actual: str) -> DiffRenderResult:
+    def render_with_metadata(
+        self,
+        expected: str,
+        actual: str,
+        *,
+        alignment_registry: AlignmentRegistry | None = None,
+    ) -> DiffRenderResult:
         """Return structural diff text together with fallback metadata."""
+        self._alignment_registry = alignment_registry
+        try:
+            return self._render_with_metadata_impl(expected, actual)
+        finally:
+            self._alignment_registry = None
+
+    def _render_with_metadata_impl(self, expected: str, actual: str) -> DiffRenderResult:
+        """Core render logic with alignment_registry available on self."""
         if expected == actual:
             return DiffRenderResult(text="", mode="structural")
 
@@ -111,9 +150,118 @@ class StructuralDiffRenderer:
         actual: list[Any],
         path: str,
     ) -> list[Change]:
+        # Check whether an alignment rule applies to this list path.
+        # The runtime path uses concrete indices (e.g., ``$.regions[3].orders``)
+        # but rules are registered with wildcards (``$.regions[*].orders``),
+        # so we generalize before lookup.
+        if self._alignment_registry is not None:
+            normalized = normalize_path(path)
+            rule = self._alignment_registry.lookup(normalized)
+            if rule is None:
+                # The runtime path may use concrete indices
+                # (e.g., ``$.regions[3].orders``) while the rule is
+                # registered with wildcards (``$.regions[*].orders``).
+                generalized = generalize_indices(normalized)
+                rule = self._alignment_registry.lookup(generalized)
+            if rule is None:
+                # The runtime path may contain entity-label brackets
+                # from a parent aligned list (e.g.,
+                # ``$.regions[name="US"].orders``).  Generalize ALL
+                # bracket expressions to wildcards.
+                generalized = generalize_brackets(normalized)
+                rule = self._alignment_registry.lookup(generalized)
+            if rule is not None:
+                result = align_lists(expected, actual, rule, normalized)
+                return self._diff_lists_aligned(expected, actual, path, result)
+
         if len(expected) <= _LCS_LIST_THRESHOLD and len(actual) <= _LCS_LIST_THRESHOLD:
             return self._diff_lists_lcs(expected, actual, path)
         return self._diff_lists_index(expected, actual, path)
+
+    def _diff_lists_aligned(
+        self,
+        expected: list[Any],
+        actual: list[Any],
+        path: str,
+        result: AlignmentResult,
+    ) -> list[Change]:
+        """Produce changes using alignment result from ``align_lists``.
+
+        Matched pairs are recursed into with ``_compute_changes`` so that
+        their internal differences are reported at full path depth.
+        Unmatched elements are emitted as removals / additions with an
+        entity-label path suffix (e.g., ``$.users[id=42]``) so the user
+        can identify *which* entity was added or removed regardless of
+        its positional index.
+        """
+        changes: list[Change] = []
+
+        for match in result.matches:
+            key_label = self._format_key_label(result.rule.fields, match.key.values)
+            child_path = f"{path}[{key_label}]"
+            changes.extend(
+                self._compute_changes(
+                    expected[match.expected_index],
+                    actual[match.actual_index],
+                    child_path,
+                )
+            )
+
+        for idx in result.unmatched_expected:
+            element = expected[idx]
+            label = self._element_label(element, result.rule.fields, idx)
+            changes.append(KeyRemoved(f"{path}[{label}]", element))
+
+        for idx in result.unmatched_actual:
+            element = actual[idx]
+            label = self._element_label(element, result.rule.fields, idx)
+            changes.append(KeyAdded(f"{path}[{label}]", element))
+
+        return changes
+
+    @staticmethod
+    def _format_key_label(fields: tuple[str, ...], values: tuple[Any, ...]) -> str:
+        """Build a human-readable entity label from key fields and values.
+
+        Single-field keys produce ``id=42``.
+        Composite keys produce ``region="US",number=7``.
+
+        The ``values`` tuple may contain type-safety wrappers (tagged tuples
+        for booleans) which we unwrap for display.
+        """
+        parts: list[str] = []
+        for field, value in zip(fields, values):
+            display_value = _unwrap_display_value(value)
+            if isinstance(display_value, str):
+                parts.append(f'{field}="{display_value}"')
+            else:
+                parts.append(f"{field}={display_value!r}")
+        return ",".join(parts)
+
+    @staticmethod
+    def _element_label(
+        element: Any,
+        fields: tuple[str, ...],
+        fallback_index: int,
+    ) -> str:
+        """Build the best available label for an unmatched element.
+
+        If the element is a dict with the key fields present, produce the
+        entity label.  Otherwise, fall back to the positional index.
+        """
+        if isinstance(element, dict):
+            parts: list[str] = []
+            for field in fields:
+                if field in element:
+                    value = element[field]
+                    if isinstance(value, str):
+                        parts.append(f'{field}="{value}"')
+                    else:
+                        parts.append(f"{field}={value!r}")
+                else:
+                    return str(fallback_index)
+            return ",".join(parts)
+        return str(fallback_index)
 
     def _diff_lists_lcs(
         self,

@@ -3,6 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any, TYPE_CHECKING
 
+from .alignment.registry import AlignmentRegistry
 from .config import SnapshotConfig
 from .exceptions import MissingSnapshotError, SnapshotError, SnapshotMismatchError
 from .models import MismatchDetail, SnapshotKey
@@ -10,6 +11,7 @@ from .policy import build_missing_snapshot_blocked_finding
 from .protocols import DiffRenderer, StorageBackend
 from .runtime import AssertionRuntime
 from .sanitizers import SanitizerRegistry
+from .sanitizers.json_masks import JsonMaskApplicator
 from .serializers import SerializerRegistry
 
 if TYPE_CHECKING:
@@ -40,6 +42,7 @@ class SnapshotAssertion:
         *,
         test_location: TestLocation,
         collector: SnapshotCollector | None = None,
+        json_mask_applicator: JsonMaskApplicator | None = None,
     ) -> None:
         self._config = config
         self._storage = storage
@@ -52,6 +55,7 @@ class SnapshotAssertion:
             storage,
             differ,
             collector=collector,
+            json_mask_applicator=json_mask_applicator,
         )
         self._auto_index: int = 0
         self._used_names: set[str] = set()
@@ -71,14 +75,28 @@ class SnapshotAssertion:
         value: Any,
         *,
         snapshot_name: str | None = None,
+        match_lists_by: dict[str, str | list[str]] | None = None,
     ) -> None:
-        """Assert that value matches the stored snapshot."""
+        """Assert that value matches the stored snapshot.
+
+        Parameters
+        ----------
+        match_lists_by:
+            Optional keyed-list alignment rules.  Maps JSON paths to
+            identity field names used for semantic list matching::
+
+                snapshot.assert_match(data, match_lists_by={
+                    "$.users": "id",
+                    "$.orders": ["region", "number"],
+                })
+        """
         key = SnapshotKey(
             module=self._test_location.module,
             class_name=self._test_location.class_name,
             test_name=self._test_location.test_name,
             snapshot_name=self._resolve_name(snapshot_name),
         )
+        alignment_registry = self._build_alignment_registry(match_lists_by)
         prepared = self._runtime.prepare(key=key, value=value)
 
         if self._config.update_mode:
@@ -97,6 +115,7 @@ class SnapshotAssertion:
             expected=stored,
             actual=prepared.actual,
             diagnostics=prepared.diagnostics,
+            alignment_registry=alignment_registry,
         )
 
         if self._review_mode and self._collector is not None:
@@ -161,6 +180,25 @@ class SnapshotAssertion:
             )
 
         self._storage.write(prepared.key, prepared.actual)
+
+    def _build_alignment_registry(
+        self, match_lists_by: dict[str, str | list[str]] | None,
+    ) -> AlignmentRegistry | None:
+        """Validate and normalize ``match_lists_by`` into an AlignmentRegistry."""
+        if match_lists_by is None:
+            return None
+        if not isinstance(match_lists_by, dict):
+            raise SnapshotError(
+                f"match_lists_by must be a dict, got {type(match_lists_by).__name__}"
+            )
+        if not match_lists_by:
+            return None
+        try:
+            return AlignmentRegistry.from_dict(match_lists_by)
+        except (TypeError, ValueError) as exc:
+            raise SnapshotError(
+                f"Invalid match_lists_by configuration: {exc}"
+            ) from exc
 
     def _resolve_name(self, snapshot_name: str | None) -> str:
         """Resolve snapshot name, handling auto-indexing and duplicate detection."""
