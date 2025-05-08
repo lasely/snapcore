@@ -20,7 +20,7 @@ _SEPARATOR = "=" * 60
 _THIN_SEP = "-" * 60
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, slots=True)
 class ReviewResult:
     """Result object returned by an interactive review session."""
 

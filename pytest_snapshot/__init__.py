@@ -14,8 +14,6 @@ from .models import (
     MismatchDetail,
     PolicyFinding,
     SnapshotKey,
-    SnapshotRecord,
-    SnapshotResult,
 )
 
 __all__ = [
@@ -25,8 +23,6 @@ __all__ = [
     "SnapshotMismatchError",
     "MissingSnapshotError",
     "SnapshotKey",
-    "SnapshotRecord",
-    "SnapshotResult",
     "MismatchDetail",
     "AssertionDiagnostics",
     "DiffRenderResult",

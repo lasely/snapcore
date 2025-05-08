@@ -157,7 +157,16 @@ class ReviewReport:
         if diagnostics.serializer_forced:
             serializer += " forced"
 
-        sanitizers = ", ".join(diagnostics.sanitizer_names) if diagnostics.sanitizer_names else "none"
+        if diagnostics.sanitizer_counts and diagnostics.sanitizer_names:
+            parts = []
+            for name in diagnostics.sanitizer_names:
+                count = diagnostics.sanitizer_counts.get(name, 0)
+                parts.append(f"{name}({count})")
+            sanitizers = ", ".join(parts)
+        elif diagnostics.sanitizer_names:
+            sanitizers = ", ".join(diagnostics.sanitizer_names)
+        else:
+            sanitizers = "none"
         diff_mode = diagnostics.effective_diff_mode or diagnostics.diff_mode
         if diagnostics.effective_diff_mode and diagnostics.effective_diff_mode != diagnostics.diff_mode:
             diff_mode = f"{diff_mode} (requested {diagnostics.diff_mode})"
@@ -181,6 +190,8 @@ class ReviewReport:
             "sanitizer_profile": diagnostics.sanitizer_profile,
             "diff_mode": diagnostics.diff_mode,
         }
+        if diagnostics.sanitizer_counts is not None:
+            data["sanitizer_counts"] = diagnostics.sanitizer_counts
         if diagnostics.serializer_priority is not None:
             data["serializer_priority"] = diagnostics.serializer_priority
         if diagnostics.effective_diff_mode is not None:

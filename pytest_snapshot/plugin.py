@@ -12,12 +12,15 @@ from .facade import SnapshotAssertion, TestLocation
 from .policy import build_orphan_policy_findings
 from .review.collector import SnapshotCollector
 from .sanitizers import SanitizerRegistry
+from .sanitizers.json_masks import JsonMaskApplicator
+from .sanitizers.profiles import load_profile_sanitizers
 from .serializers import create_default_registry
 from .storage import FileStorageBackend, NamingPolicy
 
 if TYPE_CHECKING:
     from .protocols import Sanitizer, Serializer
 
+_collector_key = pytest.StashKey[SnapshotCollector]()
 
 _ALLOWED_MISSING_POLICIES = {"create", "fail", "review"}
 _ALLOWED_REPR_POLICIES = {"allow", "warn", "forbid"}
@@ -103,13 +106,13 @@ def pytest_addoption(parser: pytest.Parser) -> None:
 def pytest_configure(config: pytest.Config) -> None:
     """Validate option combinations and create session-scoped collector."""
     _validate_runtime_options(config)
-    config._snapshot_collector = SnapshotCollector()
+    config.stash[_collector_key] = SnapshotCollector()
 
 
 def pytest_sessionfinish(session: pytest.Session, exitstatus: int) -> None:
     """Run review session or print CI report after all tests complete."""
     config = session.config
-    collector: SnapshotCollector = config._snapshot_collector
+    collector: SnapshotCollector = config.stash[_collector_key]
 
     review = config.getoption("--snapshot-review", default=False)
     review_ci = config.getoption("--snapshot-review-ci", default=False)
@@ -193,19 +196,23 @@ def snapshot(request: pytest.FixtureRequest) -> SnapshotAssertion:
     serializer_registry = create_default_registry()
     sanitizer_registry = SanitizerRegistry()
 
+    for s in load_profile_sanitizers(config.sanitizer_profile):
+        sanitizer_registry.register(s)
+
     for s in _get_user_serializers(request):
         serializer_registry.register(s, priority=0)
 
     for s in _get_user_sanitizers(request):
         sanitizer_registry.register(s)
 
+    json_masks = _get_json_masks(request)
+    json_mask_applicator = JsonMaskApplicator(json_masks) if json_masks else None
+
     storage = FileStorageBackend(NamingPolicy(), config.snapshot_dir)
     differ = _build_diff_renderer(config)
     test_location = _extract_test_location(request.node)
 
-    collector: SnapshotCollector | None = getattr(
-        request.config, "_snapshot_collector", None,
-    )
+    collector: SnapshotCollector | None = request.config.stash.get(_collector_key, None)
 
     return SnapshotAssertion(
         config,
@@ -215,6 +222,7 @@ def snapshot(request: pytest.FixtureRequest) -> SnapshotAssertion:
         differ,
         test_location=test_location,
         collector=collector,
+        json_mask_applicator=json_mask_applicator,
     )
 
 def _build_config(pytestconfig: pytest.Config) -> SnapshotConfig:
@@ -276,6 +284,13 @@ def _get_user_sanitizers(request: pytest.FixtureRequest) -> list[Sanitizer]:
         return request.getfixturevalue("snapshot_sanitizers")
     except pytest.FixtureLookupError:
         return []
+
+
+def _get_json_masks(request: pytest.FixtureRequest) -> dict[str, str]:
+    try:
+        return request.getfixturevalue("snapshot_json_masks")
+    except pytest.FixtureLookupError:
+        return {}
 
 
 def _validate_runtime_options(config: pytest.Config) -> None:

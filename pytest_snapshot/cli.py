@@ -174,7 +174,7 @@ def _collect_test_dirs(snapshot_dir: Path) -> set[str]:
                 module_file = parts[0].replace("\\", "/")
                 if module_file.endswith(".py"):
                     module_file = module_file[:-3]
-                module_parts = module_file.replace("/", "/")
+                module_parts = module_file
 
                 dir_parts = [module_parts]
                 if len(parts) > 2:
