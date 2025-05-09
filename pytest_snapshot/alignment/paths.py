@@ -10,7 +10,14 @@ from __future__ import annotations
 import re
 
 _INDEX_RE = re.compile(r"\[\d+\]")
-_BRACKET_RE = re.compile(r"\[[^\]]+\]")
+# Matches a bracket expression while correctly skipping quoted string content.
+# The alternation handles three token kinds inside brackets in priority order:
+#   1. "[^"]*"  — double-quoted string (may contain ']')
+#   2. '[^']*'  — single-quoted string (may contain ']')
+#   3. [^"'\]]  — any other single character that is not a quote or ']'
+# This prevents a ']' that appears inside a quoted key value
+# (e.g. [name="a]b"]) from prematurely terminating the bracket match.
+_BRACKET_RE = re.compile(r"""\[(?:"[^"]*"|'[^']*'|[^"'\]])*\]""")
 
 
 def normalize_path(path: str) -> str:
@@ -64,5 +71,9 @@ def generalize_brackets(path: str) -> str:
     (e.g., ``$.regions[name="US"].orders``) into pattern-matchable form
     (``$.regions[*].orders``).  This is a superset of ``generalize_indices``
     that also handles composite key labels and string-valued labels.
+
+    Quoted string values inside brackets are parsed correctly, so a ``]``
+    that appears inside a quoted value (e.g. ``[name="a]b"]``) does not
+    prematurely terminate the bracket expression.
     """
     return _BRACKET_RE.sub("[*]", path)
