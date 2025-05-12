@@ -16,6 +16,7 @@ import json
 from typing import Any, TYPE_CHECKING
 
 from ..alignment.executor import align_lists
+from ..alignment.findings import build_path_type_finding
 from ..alignment.paths import generalize_brackets, generalize_indices, normalize_path
 from ..models import DiffRenderResult
 from .changes import Change, KeyAdded, KeyRemoved, TypeChanged, ValueChanged
@@ -23,7 +24,7 @@ from .lcs import compute_lcs_indices
 from .text import TextDiffRenderer
 
 if TYPE_CHECKING:
-    from ..alignment.models import AlignmentResult
+    from ..alignment.models import AlignmentResult, AlignmentRule
     from ..alignment.registry import AlignmentRegistry
 
 _LCS_LIST_THRESHOLD = 50
@@ -53,6 +54,7 @@ class StructuralDiffRenderer:
         self._text_fallback = text_fallback or TextDiffRenderer()
         self._value_truncate_length = value_truncate_length
         self._alignment_registry: AlignmentRegistry | None = None
+        self._alignment_warnings: list[str] = []
 
     def render(self, expected: str, actual: str) -> str:
         """Return the formatted structural diff text for two serialized values."""
@@ -67,10 +69,12 @@ class StructuralDiffRenderer:
     ) -> DiffRenderResult:
         """Return structural diff text together with fallback metadata."""
         self._alignment_registry = alignment_registry
+        self._alignment_warnings = []
         try:
             return self._render_with_metadata_impl(expected, actual)
         finally:
             self._alignment_registry = None
+            self._alignment_warnings = []
 
     def _render_with_metadata_impl(self, expected: str, actual: str) -> DiffRenderResult:
         """Core render logic with alignment_registry available on self."""
@@ -89,19 +93,29 @@ class StructuralDiffRenderer:
             )
 
         changes = self._compute_changes(expected_obj, actual_obj, path="$")
+        alignment_warnings = tuple(self._alignment_warnings)
         if not changes:
             fallback = self._text_fallback.render_with_metadata(expected, actual)
             return DiffRenderResult(
                 text=fallback.text,
                 mode=fallback.mode,
                 fallback_reason="structural_equivalence",
+                alignment_warnings=alignment_warnings,
             )
 
         structural_output = self._format_changes(changes)
         text_diff = self._text_fallback.render(expected, actual)
+        if alignment_warnings:
+            warnings_block = "Alignment warnings:\n" + "".join(
+                f"  [{w}]\n" for w in alignment_warnings
+            )
+            full_text = f"{warnings_block}\n{structural_output}\n\nFull diff:\n{text_diff}"
+        else:
+            full_text = f"{structural_output}\n\nFull diff:\n{text_diff}"
         return DiffRenderResult(
-            text=f"{structural_output}\n\nFull diff:\n{text_diff}",
+            text=full_text,
             mode="structural",
+            alignment_warnings=alignment_warnings,
         )
 
     def _compute_changes(
@@ -114,6 +128,7 @@ class StructuralDiffRenderer:
             return [TypeChanged(path, expected, actual)]
 
         if isinstance(expected, dict):
+            self._warn_if_alignment_rule_ignored(path, "dict")
             return self._diff_dicts(expected, actual, path)
 
         if isinstance(expected, list):
@@ -144,35 +159,34 @@ class StructuralDiffRenderer:
 
         return changes
 
+    def _lookup_alignment_rule(self, path: str) -> AlignmentRule | None:
+        """Look up an alignment rule using 3-tier path generalization.
+
+        The runtime path uses concrete indices (e.g., ``$.regions[3].orders``)
+        but rules are registered with wildcards (``$.regions[*].orders``),
+        so we try: exact normalized → generalized indices → generalized brackets.
+        """
+        if self._alignment_registry is None:
+            return None
+        normalized = normalize_path(path)
+        rule = self._alignment_registry.lookup(normalized)
+        if rule is None:
+            rule = self._alignment_registry.lookup(generalize_indices(normalized))
+        if rule is None:
+            rule = self._alignment_registry.lookup(generalize_brackets(normalized))
+        return rule
+
     def _diff_lists(
         self,
         expected: list[Any],
         actual: list[Any],
         path: str,
     ) -> list[Change]:
-        # Check whether an alignment rule applies to this list path.
-        # The runtime path uses concrete indices (e.g., ``$.regions[3].orders``)
-        # but rules are registered with wildcards (``$.regions[*].orders``),
-        # so we generalize before lookup.
-        if self._alignment_registry is not None:
+        rule = self._lookup_alignment_rule(path)
+        if rule is not None:
             normalized = normalize_path(path)
-            rule = self._alignment_registry.lookup(normalized)
-            if rule is None:
-                # The runtime path may use concrete indices
-                # (e.g., ``$.regions[3].orders``) while the rule is
-                # registered with wildcards (``$.regions[*].orders``).
-                generalized = generalize_indices(normalized)
-                rule = self._alignment_registry.lookup(generalized)
-            if rule is None:
-                # The runtime path may contain entity-label brackets
-                # from a parent aligned list (e.g.,
-                # ``$.regions[name="US"].orders``).  Generalize ALL
-                # bracket expressions to wildcards.
-                generalized = generalize_brackets(normalized)
-                rule = self._alignment_registry.lookup(generalized)
-            if rule is not None:
-                result = align_lists(expected, actual, rule, normalized)
-                return self._diff_lists_aligned(expected, actual, path, result)
+            result = align_lists(expected, actual, rule, normalized)
+            return self._diff_lists_aligned(expected, actual, path, result)
 
         if len(expected) <= _LCS_LIST_THRESHOLD and len(actual) <= _LCS_LIST_THRESHOLD:
             return self._diff_lists_lcs(expected, actual, path)
@@ -216,6 +230,11 @@ class StructuralDiffRenderer:
             element = actual[idx]
             label = self._element_label(element, result.rule.fields, idx)
             changes.append(KeyAdded(f"{path}[{label}]", element))
+
+        # Surface alignment findings so users understand why matching was
+        # partial or degraded (duplicate keys, missing fields, etc.).
+        for finding in result.findings:
+            self._alignment_warnings.append(finding.message)
 
         return changes
 
@@ -353,6 +372,23 @@ class StructuralDiffRenderer:
         if isinstance(value, (int, float)):
             return json.dumps(value)
         return json.dumps(value, ensure_ascii=False, separators=(",", ":"))
+
+    def _warn_if_alignment_rule_ignored(self, path: str, actual_type: str) -> None:
+        """Emit a warning when an alignment rule targets a non-list value.
+
+        Users register alignment rules for paths they expect to contain lists.
+        If the value at that path is a dict (or scalar), the rule is silently
+        ignored because ``_diff_lists`` is never entered.  This method detects
+        that mismatch and surfaces a diagnostic warning.
+        """
+        rule = self._lookup_alignment_rule(path)
+        if rule is not None:
+            finding = build_path_type_finding(
+                path=path,
+                actual_type=actual_type,
+                list_side="both",
+            )
+            self._alignment_warnings.append(finding.message)
 
     def _truncate(self, s: str) -> str:
         """Truncate long value renderings to keep summaries readable."""

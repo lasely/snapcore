@@ -25,7 +25,7 @@ class AssertionDiagnostics:
     sanitizer_names: tuple[str, ...]
     sanitizer_profile: str
     diff_mode: str
-    sanitizer_counts: dict[str, int] | None = None
+    sanitizer_counts: tuple[tuple[str, int], ...] | None = None
     effective_diff_mode: str | None = None
     diff_fallback_reason: str | None = None
     snapshot_path: Path | None = None
@@ -50,6 +50,7 @@ class DiffRenderResult:
     text: str
     mode: str
     fallback_reason: str | None = None
+    alignment_warnings: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)

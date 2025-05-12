@@ -91,7 +91,6 @@ def _apply_mask(data: Any, segments: list[str | None], replacement: str) -> None
     head, rest = segments[0], segments[1:]
 
     if head is None:
-        # Wildcard: iterate list elements
         if isinstance(data, list):
             for item in data:
                 _apply_mask(item, rest, replacement)
@@ -99,7 +98,6 @@ def _apply_mask(data: Any, segments: list[str | None], replacement: str) -> None
 
     if isinstance(data, dict) and head in data:
         if not rest:
-            # Leaf: replace value
             data[head] = replacement
         else:
             _apply_mask(data[head], rest, replacement)

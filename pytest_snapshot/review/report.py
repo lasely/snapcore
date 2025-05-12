@@ -158,9 +158,10 @@ class ReviewReport:
             serializer += " forced"
 
         if diagnostics.sanitizer_counts and diagnostics.sanitizer_names:
+            sanitizer_counts_map = dict(diagnostics.sanitizer_counts)
             parts = []
             for name in diagnostics.sanitizer_names:
-                count = diagnostics.sanitizer_counts.get(name, 0)
+                count = sanitizer_counts_map.get(name, 0)
                 parts.append(f"{name}({count})")
             sanitizers = ", ".join(parts)
         elif diagnostics.sanitizer_names:
@@ -191,7 +192,7 @@ class ReviewReport:
             "diff_mode": diagnostics.diff_mode,
         }
         if diagnostics.sanitizer_counts is not None:
-            data["sanitizer_counts"] = diagnostics.sanitizer_counts
+            data["sanitizer_counts"] = dict(diagnostics.sanitizer_counts)
         if diagnostics.serializer_priority is not None:
             data["serializer_priority"] = diagnostics.serializer_priority
         if diagnostics.effective_diff_mode is not None:

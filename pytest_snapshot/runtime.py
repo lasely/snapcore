@@ -102,7 +102,7 @@ class AssertionRuntime:
             sanitizer_names=tuple(sanitizer_names),
             sanitizer_profile=self._config.sanitizer_profile,
             diff_mode=self._config.diff_mode,
-            sanitizer_counts=sanitizer_counts or None,
+            sanitizer_counts=tuple(sanitizer_counts.items()) if sanitizer_counts else None,
             snapshot_path=snapshot_path,
         )
         return PreparedAssertion(

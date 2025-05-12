@@ -10,13 +10,11 @@ from __future__ import annotations
 import re
 
 _INDEX_RE = re.compile(r"\[\d+\]")
-# Matches a bracket expression while correctly skipping quoted string content.
-# The alternation handles three token kinds inside brackets in priority order:
-#   1. "[^"]*"  — double-quoted string (may contain ']')
-#   2. '[^']*'  — single-quoted string (may contain ']')
-#   3. [^"'\]]  — any other single character that is not a quote or ']'
-# This prevents a ']' that appears inside a quoted key value
-# (e.g. [name="a]b"]) from prematurely terminating the bracket match.
+
+# Match any bracket expression, respecting quoted strings inside brackets.
+# Alternation order: double-quoted string | single-quoted string | non-quote-non-bracket char.
+# This ensures a ']' inside a quoted value (e.g. [name="a]b"]) does not
+# prematurely terminate the bracket expression.
 _BRACKET_RE = re.compile(r"""\[(?:"[^"]*"|'[^']*'|[^"'\]])*\]""")
 
 
