@@ -15,6 +15,7 @@ from .sanitizers.json_masks import JsonMaskApplicator
 from .serializers import SerializerRegistry
 
 if TYPE_CHECKING:
+    from .intelligence.collector import ObservationCollector
     from .review.collector import SnapshotCollector
 
 
@@ -43,11 +44,13 @@ class SnapshotAssertion:
         test_location: TestLocation,
         collector: SnapshotCollector | None = None,
         json_mask_applicator: JsonMaskApplicator | None = None,
+        observation_collector: ObservationCollector | None = None,
     ) -> None:
         self._config = config
         self._storage = storage
         self._test_location = test_location
         self._collector = collector
+        self._observation_collector = observation_collector
         self._runtime = AssertionRuntime(
             config,
             serializer_registry,
@@ -98,6 +101,18 @@ class SnapshotAssertion:
         )
         alignment_registry = self._build_alignment_registry(match_lists_by)
         prepared = self._runtime.prepare(key=key, value=value)
+
+        # Record observation for profiling (post-serialization, post-sanitization)
+        if self._observation_collector is not None:
+            self._observation_collector.record(
+                key=key,
+                serialized_text=prepared.actual,
+                serializer_name=prepared.diagnostics.serializer_name,
+            )
+
+        # In profile mode, skip comparison/storage — observe only
+        if self._config.profile_mode:
+            return
 
         if self._config.update_mode:
             self._storage.write(key, prepared.actual)

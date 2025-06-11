@@ -10,6 +10,7 @@ from .config import SnapshotConfig
 from .diff import StructuralDiffRenderer, TextDiffRenderer
 from .facade import SnapshotAssertion, TestLocation
 from .policy import build_orphan_policy_findings
+from .intelligence.collector import ObservationCollector
 from .review.collector import SnapshotCollector
 from .sanitizers import SanitizerRegistry
 from .sanitizers.json_masks import JsonMaskApplicator
@@ -21,6 +22,7 @@ if TYPE_CHECKING:
     from .protocols import Sanitizer, Serializer
 
 _collector_key = pytest.StashKey[SnapshotCollector]()
+_observation_collector_key = pytest.StashKey[ObservationCollector]()
 
 _ALLOWED_MISSING_POLICIES = {"create", "fail", "review"}
 _ALLOWED_REPR_POLICIES = {"allow", "warn", "forbid"}
@@ -65,6 +67,23 @@ def pytest_addoption(parser: pytest.Parser) -> None:
         default=False,
         help="Delete orphaned snapshot files after the test run",
     )
+    group.addoption(
+        "--snapshot-profile",
+        action="store_true",
+        default=False,
+        help="Run snapshot profiling to detect flaky paths",
+    )
+    group.addoption(
+        "--snapshot-profile-runs",
+        type=int,
+        default=5,
+        help="Number of profiling iterations (default: 5)",
+    )
+    group.addoption(
+        "--snapshot-profile-output",
+        default=None,
+        help="Directory for profile analysis output (default: project root)",
+    )
 
     parser.addini(
         "snapshot_dir",
@@ -104,15 +123,60 @@ def pytest_addoption(parser: pytest.Parser) -> None:
 
 
 def pytest_configure(config: pytest.Config) -> None:
-    """Validate option combinations and create session-scoped collector."""
+    """Validate option combinations and create session-scoped collectors."""
     _validate_runtime_options(config)
     config.stash[_collector_key] = SnapshotCollector()
+    if config.getoption("--snapshot-profile", default=False):
+        config.stash[_observation_collector_key] = ObservationCollector()
+
+
+@pytest.hookimpl(trylast=True)
+def pytest_runtestloop(session: pytest.Session) -> bool | None:
+    """Override test loop to run items multiple times in profile mode."""
+    config = session.config
+    if not config.getoption("--snapshot-profile", default=False):
+        return None  # Let default loop handle it
+
+    profile_runs = config.getoption("--snapshot-profile-runs", default=5)
+    obs_collector: ObservationCollector = config.stash[_observation_collector_key]
+
+    if (
+        session.testsfailed
+        and not session.config.option.continue_on_collection_errors
+    ):
+        raise session.Interrupted(
+            f"{session.testsfailed} error(s) during collection"
+        )
+
+    if session.config.option.collectonly:
+        return True
+
+    for run_idx in range(profile_runs):
+        obs_collector.start_run()
+        tw = session.config.get_terminal_writer()
+        tw.line(f"\n=== Snapshot Profile Run {run_idx + 1}/{profile_runs} ===")
+
+        for i, item in enumerate(session.items):
+            nextitem = session.items[i + 1] if i + 1 < len(session.items) else None
+            item.config.hook.pytest_runtest_protocol(item=item, nextitem=nextitem)
+            if session.shouldfail:
+                raise session.Failed(session.shouldfail)
+            if session.shouldstop:
+                raise session.Interrupted(session.shouldstop)
+
+    return True  # Signal that we handled the loop
 
 
 def pytest_sessionfinish(session: pytest.Session, exitstatus: int) -> None:
-    """Run review session or print CI report after all tests complete."""
+    """Run review session, print CI report, or analyze profile after all tests."""
     config = session.config
     collector: SnapshotCollector = config.stash[_collector_key]
+
+    # -- Profile mode analysis --
+    profile = config.getoption("--snapshot-profile", default=False)
+    if profile:
+        _run_profile_analysis(session)
+        return
 
     review = config.getoption("--snapshot-review", default=False)
     review_ci = config.getoption("--snapshot-review-ci", default=False)
@@ -214,6 +278,12 @@ def snapshot(request: pytest.FixtureRequest) -> SnapshotAssertion:
 
     collector: SnapshotCollector | None = request.config.stash.get(_collector_key, None)
 
+    observation_collector: ObservationCollector | None = None
+    if config.profile_mode:
+        observation_collector = request.config.stash.get(
+            _observation_collector_key, None
+        )
+
     return SnapshotAssertion(
         config,
         serializer_registry,
@@ -223,7 +293,78 @@ def snapshot(request: pytest.FixtureRequest) -> SnapshotAssertion:
         test_location=test_location,
         collector=collector,
         json_mask_applicator=json_mask_applicator,
+        observation_collector=observation_collector,
     )
+
+def _run_profile_analysis(session: pytest.Session) -> None:
+    """Run profiler, suggestion engine, and emit report after profile runs."""
+    from .intelligence.models import AnalysisReport
+    from .intelligence.profiler import PathStabilityProfiler
+    from .intelligence.report import IntelligenceReport
+    from .intelligence.suggestions import SuggestionEngine
+
+    config = session.config
+    obs_collector: ObservationCollector = config.stash[_observation_collector_key]
+
+    if obs_collector.total_observations == 0:
+        sys.stdout.write(
+            "\n=== Snapshot Profile Report ===\n"
+            "No snapshot observations collected.\n"
+        )
+        return
+
+    profiler = PathStabilityProfiler(min_runs=3)
+    engine = SuggestionEngine()
+    reports: list[AnalysisReport] = []
+
+    for key in sorted(obs_collector.all_keys(), key=lambda k: (k.module, k.test_name, k.snapshot_name)):
+        observations = obs_collector.observations_for(key)
+        result = profiler.profile(observations)
+        suggestions = engine.analyze(
+            list(result.findings),
+            list(result.path_volatilities),
+            observations,
+        )
+
+        # Build summary
+        volatile_count = sum(
+            1 for v in result.path_volatilities
+            if v.volatility_class != "stable"
+        )
+        stable_count = sum(
+            1 for v in result.path_volatilities
+            if v.volatility_class == "stable"
+        )
+        total_count = len(result.path_volatilities)
+
+        reports.append(AnalysisReport(
+            key=key,
+            total_runs=obs_collector.run_count,
+            path_volatilities=result.path_volatilities,
+            findings=result.findings,
+            suggestions=tuple(suggestions),
+            summary=(
+                ("total_paths", str(total_count)),
+                ("stable_paths", str(stable_count)),
+                ("volatile_paths", str(volatile_count)),
+                ("suggestions_count", str(len(suggestions))),
+            ),
+        ))
+
+    report = IntelligenceReport(reports)
+    sys.stdout.write("\n" + report.render_terminal() + "\n")
+    sys.stdout.flush()
+
+    # Write JSON sidecar
+    snap_config = _build_config(config)
+    output_dir = snap_config.profile_output_dir or Path(config.rootdir)
+    try:
+        sidecar_path = report.write_json_sidecar(output_dir)
+        sys.stdout.write(f"Report written to: {sidecar_path}\n")
+    except OSError as exc:
+        sys.stdout.write(f"Warning: Could not write profile report: {exc}\n")
+    sys.stdout.flush()
+
 
 def _build_config(pytestconfig: pytest.Config) -> SnapshotConfig:
     invocation_dir = getattr(getattr(pytestconfig, "invocation_params", None), "dir", None)
@@ -243,6 +384,11 @@ def _build_config(pytestconfig: pytest.Config) -> SnapshotConfig:
     sanitizer_profile = _normalized_ini_value(pytestconfig, "snapshot_sanitizer_profile", "none")
     xdist_policy = _normalized_ini_value(pytestconfig, "snapshot_xdist_policy", "fail")
 
+    profile_mode = pytestconfig.getoption("--snapshot-profile", default=False)
+    profile_runs = pytestconfig.getoption("--snapshot-profile-runs", default=5)
+    profile_output_raw = pytestconfig.getoption("--snapshot-profile-output", default=None)
+    profile_output_dir = Path(profile_output_raw) if profile_output_raw else None
+
     return SnapshotConfig(
         snapshot_dir=snapshot_dir,
         update_mode=pytestconfig.getoption("--snapshot-update", default=False),
@@ -254,6 +400,9 @@ def _build_config(pytestconfig: pytest.Config) -> SnapshotConfig:
         repr_policy=repr_policy,
         sanitizer_profile=sanitizer_profile,
         xdist_policy=xdist_policy,
+        profile_mode=profile_mode,
+        profile_runs=profile_runs,
+        profile_output_dir=profile_output_dir,
     )
 
 
@@ -300,6 +449,23 @@ def _validate_runtime_options(config: pytest.Config) -> None:
     prune_report = config.getoption("--snapshot-prune-report", default=False)
     prune = config.getoption("--snapshot-prune", default=False)
     strict = config.getoption("--snapshot-strict", default=False)
+    profile = config.getoption("--snapshot-profile", default=False)
+    profile_runs = config.getoption("--snapshot-profile-runs", default=5)
+
+    if profile and (update or review or review_ci or prune_report or prune):
+        raise pytest.UsageError(
+            "--snapshot-profile is mutually exclusive with update, review, and prune modes."
+        )
+
+    if profile and profile_runs < 2:
+        raise pytest.UsageError(
+            "--snapshot-profile-runs must be at least 2."
+        )
+
+    if profile and _is_xdist_active(config):
+        raise pytest.UsageError(
+            "Snapshot profiling is not supported with pytest-xdist."
+        )
 
     if update and (review or review_ci or prune_report or prune):
         raise pytest.UsageError(
