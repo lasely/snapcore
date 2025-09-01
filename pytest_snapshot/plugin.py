@@ -130,7 +130,7 @@ def pytest_configure(config: pytest.Config) -> None:
         config.stash[_observation_collector_key] = ObservationCollector()
 
 
-@pytest.hookimpl(trylast=True)
+@pytest.hookimpl(tryfirst=True)
 def pytest_runtestloop(session: pytest.Session) -> bool | None:
     """Override test loop to run items multiple times in profile mode."""
     config = session.config
@@ -298,10 +298,8 @@ def snapshot(request: pytest.FixtureRequest) -> SnapshotAssertion:
 
 def _run_profile_analysis(session: pytest.Session) -> None:
     """Run profiler, suggestion engine, and emit report after profile runs."""
-    from .intelligence.models import AnalysisReport
-    from .intelligence.profiler import PathStabilityProfiler
+    from .intelligence.analyzer import ProfileAnalyzer
     from .intelligence.report import IntelligenceReport
-    from .intelligence.suggestions import SuggestionEngine
 
     config = session.config
     obs_collector: ObservationCollector = config.stash[_observation_collector_key]
@@ -313,43 +311,8 @@ def _run_profile_analysis(session: pytest.Session) -> None:
         )
         return
 
-    profiler = PathStabilityProfiler(min_runs=3)
-    engine = SuggestionEngine()
-    reports: list[AnalysisReport] = []
-
-    for key in sorted(obs_collector.all_keys(), key=lambda k: (k.module, k.test_name, k.snapshot_name)):
-        observations = obs_collector.observations_for(key)
-        result = profiler.profile(observations)
-        suggestions = engine.analyze(
-            list(result.findings),
-            list(result.path_volatilities),
-            observations,
-        )
-
-        # Build summary
-        volatile_count = sum(
-            1 for v in result.path_volatilities
-            if v.volatility_class != "stable"
-        )
-        stable_count = sum(
-            1 for v in result.path_volatilities
-            if v.volatility_class == "stable"
-        )
-        total_count = len(result.path_volatilities)
-
-        reports.append(AnalysisReport(
-            key=key,
-            total_runs=obs_collector.run_count,
-            path_volatilities=result.path_volatilities,
-            findings=result.findings,
-            suggestions=tuple(suggestions),
-            summary=(
-                ("total_paths", str(total_count)),
-                ("stable_paths", str(stable_count)),
-                ("volatile_paths", str(volatile_count)),
-                ("suggestions_count", str(len(suggestions))),
-            ),
-        ))
+    analyzer = ProfileAnalyzer(min_runs=3)
+    reports = analyzer.analyze(obs_collector)
 
     report = IntelligenceReport(reports)
     sys.stdout.write("\n" + report.render_terminal() + "\n")
