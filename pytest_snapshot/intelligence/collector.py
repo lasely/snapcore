@@ -1,9 +1,9 @@
 """Session-scoped observation collector for profile mode.
 
-The collector accumulates ``RunObservation`` records across multiple
-profile-mode iterations within a single pytest session.  It is stored
-in the pytest config stash and injected into ``SnapshotAssertion`` via
-the ``snapshot`` fixture.
+The collector is a pure accumulator: it stores raw serialized text
+and metadata, deferring path extraction to the analysis phase
+(``ProfileAnalyzer``).  This keeps the hot path (test execution)
+lightweight and separates collection from transformation.
 
 Observations are kept in memory only — no persistence between pytest
 invocations.  The only persistent output is the final JSON report sidecar
@@ -12,30 +12,44 @@ written by ``IntelligenceReport`` after all runs complete.
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from datetime import datetime, timezone
 
 from ..models import SnapshotKey
-from .extractor import extract_path_values
-from .models import RunObservation
+
+
+@dataclass(frozen=True, slots=True)
+class RawObservation:
+    """Raw observation stored during test execution.
+
+    Lightweight record — no path extraction, no hashing.
+    Path extraction is deferred to ``ProfileAnalyzer.analyze()``.
+    """
+
+    key: SnapshotKey
+    run_index: int
+    serializer_name: str
+    serialized_text: str
+    timestamp: str
 
 
 class ObservationCollector:
-    """Accumulate run observations across profile-mode iterations.
+    """Accumulate raw observations across profile-mode iterations.
 
     Lifecycle:
 
     1. Created in ``pytest_configure`` when ``--snapshot-profile`` is active.
     2. ``start_run()`` called at the beginning of each profile iteration.
     3. ``record()`` called from ``facade.assert_match()`` after ``runtime.prepare()``.
-    4. After all iterations, ``pytest_sessionfinish`` reads observations and
-       passes them to the profiler.
+    4. After all iterations, ``ProfileAnalyzer`` reads raw observations,
+       runs extraction, and passes results to the profiler.
 
     Thread safety is not required (pytest is single-threaded per worker,
     and profile mode is mutually exclusive with xdist).
     """
 
     def __init__(self) -> None:
-        self._observations: dict[SnapshotKey, list[RunObservation]] = {}
+        self._observations: dict[SnapshotKey, list[RawObservation]] = {}
         self._current_run_index: int = -1
 
     def start_run(self) -> None:
@@ -48,11 +62,7 @@ class ObservationCollector:
         serialized_text: str,
         serializer_name: str,
     ) -> None:
-        """Record one observation for the current run.
-
-        Extracts path-value pairs from the serialized text (post-sanitization)
-        and stores them as a ``RunObservation``.  If ``json.loads`` fails
-        (non-JSON serializer), path_values will be an empty tuple.
+        """Record one raw observation for the current run.
 
         Parameters
         ----------
@@ -68,13 +78,11 @@ class ObservationCollector:
                 "ObservationCollector.record() called before start_run()"
             )
 
-        path_values = extract_path_values(serialized_text)
-        observation = RunObservation(
+        observation = RawObservation(
             key=key,
             run_index=self._current_run_index,
             serializer_name=serializer_name,
-            path_values=tuple(path_values),
-            raw_text=serialized_text,
+            serialized_text=serialized_text,
             timestamp=datetime.now(timezone.utc).isoformat(),
         )
 
@@ -82,8 +90,8 @@ class ObservationCollector:
             self._observations[key] = []
         self._observations[key].append(observation)
 
-    def observations_for(self, key: SnapshotKey) -> list[RunObservation]:
-        """Return all observations for a given snapshot target."""
+    def observations_for(self, key: SnapshotKey) -> list[RawObservation]:
+        """Return all raw observations for a given snapshot target."""
         return list(self._observations.get(key, []))
 
     def all_keys(self) -> set[SnapshotKey]:
