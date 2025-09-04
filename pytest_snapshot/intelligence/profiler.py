@@ -12,7 +12,6 @@ ordering defined in the design contract.
 
 from __future__ import annotations
 
-import re
 from collections import Counter, defaultdict
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
@@ -31,20 +30,14 @@ from .findings import (
     build_uuid_pattern_finding,
     build_value_volatile_finding,
 )
+from ..patterns import ISO_TIMESTAMP_DETECT_RE, UUID_DETECT_RE
 from .models import InstabilityFinding, PathVolatility, RunObservation
 
 if TYPE_CHECKING:
     from .models import ObservedPathValue
 
-# -- Pattern matchers for volatile string values ----------------------------
+# -- Epoch range for numeric timestamp detection -----------------------------
 
-_ISO_TIMESTAMP_RE = re.compile(
-    r"\d{4}-\d{2}-\d{2}[T ]\d{2}:\d{2}"
-)
-_UUID_RE = re.compile(
-    r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}",
-    re.IGNORECASE,
-)
 _EPOCH_MIN = 1_000_000_000      # ~2001-09-09
 _EPOCH_MAX = 10_000_000_000_000  # ~2286 (ms precision)
 
@@ -84,12 +77,27 @@ class PathStabilityProfiler:
     def __init__(self, *, min_runs: int = 3) -> None:
         self._min_runs = min_runs
 
-    def profile(self, observations: list[RunObservation]) -> ProfileResult:
-        """Analyze observations for one SnapshotKey and return findings."""
+    def profile(
+        self,
+        observations: list[RunObservation],
+        *,
+        total_runs: int | None = None,
+    ) -> ProfileResult:
+        """Analyze observations for one SnapshotKey and return findings.
+
+        Parameters
+        ----------
+        observations:
+            RunObservation records for one snapshot target.
+        total_runs:
+            Actual number of profile iterations.  When provided, missing
+            iterations (where ``assert_match`` did not fire) produce
+            absence markers.  Defaults to ``len(observations)``.
+        """
         if not observations:
             return ProfileResult(path_volatilities=(), findings=())
 
-        total_runs = len(observations)
+        total_runs = total_runs if total_runs is not None else len(observations)
         findings: list[InstabilityFinding] = []
 
         # Check for insufficient runs
@@ -114,13 +122,28 @@ class PathStabilityProfiler:
         path_data = self._group_paths(observations, total_runs)
 
         # Compute volatility metrics and classify
-        volatilities: list[PathVolatility] = []
+        vol_by_path: dict[str, PathVolatility] = {}
         for path in sorted(path_data.keys()):
             entries = path_data[path]
             vol = self._compute_volatility(path, entries, total_runs)
-            volatilities.append(vol)
+            vol_by_path[path] = vol
 
-            # Emit findings based on classification
+        # Post-process: order_volatile is only valid when content is stable.
+        # If [__content] sibling is also volatile, reclassify [__order] as
+        # value_volatile (content changed, not just reorder).
+        self._reclassify_order_paths(vol_by_path, path_data, total_runs)
+
+        # Filter out internal [__content] paths — they are profiler-internal
+        # and must not appear in user-facing output.
+        volatilities: list[PathVolatility] = []
+        for path in sorted(vol_by_path.keys()):
+            if path.endswith("[__content]"):
+                continue
+            volatilities.append(vol_by_path[path])
+
+        # Emit findings (also excluding [__content] paths)
+        for vol in volatilities:
+            entries = path_data[vol.path]
             findings.extend(
                 self._findings_for_path(vol, entries, total_runs)
             )
@@ -135,35 +158,56 @@ class PathStabilityProfiler:
         observations: list[RunObservation],
         total_runs: int,
     ) -> dict[str, list[_PathEntry]]:
-        """Group path values across runs, injecting absence markers."""
-        # Collect all paths and their per-run values
-        path_runs: dict[str, dict[int, ObservedPathValue]] = defaultdict(dict)
+        """Group path values across runs, injecting absence markers.
+
+        Multiple list elements that generalize to the same path (e.g.,
+        ``$.items[*].name``) are accumulated into a multiset per run,
+        preserving multiplicity so that ``[1,1,2]`` and ``[1,2,2]``
+        are distinguishable.
+        """
+        # Collect all paths and their per-run values (list, not single)
+        path_runs: dict[str, dict[int, list[ObservedPathValue]]] = defaultdict(
+            lambda: defaultdict(list)
+        )
         for obs in observations:
             for pv in obs.path_values:
-                path_runs[pv.path][obs.run_index] = pv
+                path_runs[pv.path][obs.run_index].append(pv)
 
-        # Build per-path entry lists with absence markers
+        # Build per-path entry lists with absence markers.
+        # Iterate over the full range of profile runs, not just observed ones,
+        # so that runs where assert_match() didn't fire produce absence markers.
         result: dict[str, list[_PathEntry]] = {}
-        run_indices = sorted({obs.run_index for obs in observations})
+        run_indices = list(range(total_runs))
 
         for path in sorted(path_runs.keys()):
             entries: list[_PathEntry] = []
             run_map = path_runs[path]
             for ri in run_indices:
-                if ri in run_map:
-                    pv = run_map[ri]
+                pvs = run_map.get(ri)
+                if pvs:
+                    # Build multiset of hashes (preserves multiplicity)
+                    hash_counter = Counter(pv.value_hash for pv in pvs)
+                    value_hashes = tuple(sorted(hash_counter.items()))
+                    # Collect all types observed at this path in this run
+                    value_types = tuple(sorted({pv.value_type for pv in pvs}))
+                    # Representative values for pattern detection
+                    rep = pvs[0]
                     entries.append(_PathEntry(
                         run_index=ri,
-                        value_hash=pv.value_hash,
-                        value_type=pv.value_type,
-                        value_repr=pv.value_repr,
-                        is_present=pv.is_present,
+                        value_hash=rep.value_hash,
+                        value_hashes=value_hashes,
+                        value_type=rep.value_type,
+                        value_types=value_types,
+                        value_repr=rep.value_repr,
+                        is_present=True,
                     ))
                 else:
                     entries.append(_PathEntry(
                         run_index=ri,
                         value_hash="",
+                        value_hashes=(),
                         value_type="",
+                        value_types=(),
                         value_repr="",
                         is_present=False,
                     ))
@@ -181,26 +225,30 @@ class PathStabilityProfiler:
         present_entries = [e for e in entries if e.is_present]
         presence_count = len(present_entries)
 
-        # Distinct value hashes (only from present entries)
-        distinct_hashes = set(e.value_hash for e in present_entries)
-        distinct_values = len(distinct_hashes)
+        # Distinct value multisets across runs.  Each run's value_hashes is
+        # a canonical multiset tuple; we count how many distinct multisets appear.
+        distinct_multisets = set(e.value_hashes for e in present_entries)
+        distinct_values = len(distinct_multisets)
 
-        # Type changes: count entries with a type different from the mode
-        type_counter: Counter[str] = Counter(e.value_type for e in present_entries)
-        mode_type = type_counter.most_common(1)[0][0] if type_counter else ""
-        type_changes = sum(1 for e in present_entries if e.value_type != mode_type)
+        # Type changes: compare per-run type-sets against the mode type-set.
+        # This catches mixed types under generalized list paths.
+        type_set_counter: Counter[tuple[str, ...]] = Counter(
+            e.value_types for e in present_entries
+        )
+        mode_types = type_set_counter.most_common(1)[0][0] if type_set_counter else ()
+        type_changes = sum(1 for e in present_entries if e.value_types != mode_types)
 
-        # Value changes: adjacent pairs with different hashes
+        # Value changes: adjacent pairs with different multisets
         value_changes = 0
         sorted_present = sorted(present_entries, key=lambda e: e.run_index)
         for i in range(1, len(sorted_present)):
-            if sorted_present[i].value_hash != sorted_present[i - 1].value_hash:
+            if sorted_present[i].value_hashes != sorted_present[i - 1].value_hashes:
                 value_changes += 1
 
         # Order changes: only for synthetic __order__ paths
         order_changes = 0
-        if path.endswith(".__order__"):
-            order_changes = value_changes  # Hash changes = order changes for this path
+        if path.endswith("[__order]"):
+            order_changes = value_changes
 
         # Classify
         volatility_class = self._classify(
@@ -209,7 +257,7 @@ class PathStabilityProfiler:
             distinct_values=distinct_values,
             type_changes=type_changes,
             value_changes=value_changes,
-            is_order_path=path.endswith(".__order__"),
+            is_order_path=path.endswith("[__order]"),
             order_changes=order_changes,
         )
 
@@ -227,6 +275,41 @@ class PathStabilityProfiler:
             volatility_class=volatility_class,
             confidence=confidence,
         )
+
+    @staticmethod
+    def _reclassify_order_paths(
+        vol_by_path: dict[str, PathVolatility],
+        path_data: dict[str, list[_PathEntry]],
+        total_runs: int,
+    ) -> None:
+        """Reclassify order_volatile when content also changed.
+
+        ``order_volatile`` is only valid when the sibling ``[__content]``
+        path is stable (same multiset across runs).  If content changed,
+        the order hash change is a side effect of content change, not a
+        genuine reorder.  In that case, reclassify as ``value_volatile``.
+        """
+        for path, vol in list(vol_by_path.items()):
+            if not path.endswith("[__order]"):
+                continue
+            if vol.volatility_class != "order_volatile":
+                continue
+            content_path = path.replace("[__order]", "[__content]")
+            content_vol = vol_by_path.get(content_path)
+            if content_vol is not None and content_vol.volatility_class != "stable":
+                # Content changed — this is not a true reorder.
+                # Rebuild PathVolatility with value_volatile classification.
+                vol_by_path[path] = PathVolatility(
+                    path=vol.path,
+                    total_runs=vol.total_runs,
+                    distinct_values=vol.distinct_values,
+                    presence_count=vol.presence_count,
+                    type_changes=vol.type_changes,
+                    value_changes=vol.value_changes,
+                    order_changes=0,
+                    volatility_class="value_volatile",
+                    confidence=vol.confidence,
+                )
 
     def _classify(
         self,
@@ -257,7 +340,9 @@ class PathStabilityProfiler:
         entries: list[_PathEntry],
     ) -> float:
         """Compute confidence score based on run count and evidence."""
-        # Base confidence scales with number of runs
+        # Base confidence scales linearly from 0.0 to 1.0 over 5 runs.
+        # 5 runs is the default --snapshot-profile-runs value and provides
+        # enough adjacent-pair comparisons (4) for reliable classification.
         base = min(1.0, total_runs / 5.0)
 
         if volatility_class == "stable":
@@ -335,9 +420,11 @@ class PathStabilityProfiler:
         reprs = [e.value_repr for e in present]
         types = [e.value_type for e in present]
 
-        # Timestamp pattern (strings matching ISO-8601)
+        # Timestamp pattern (strings matching ISO-8601).
+        # 80% threshold: allows 1 non-matching value in 5 runs (e.g., a null
+        # that got serialized as a placeholder string in one run).
         if all(t == "str" for t in types):
-            ts_matches = sum(1 for r in reprs if _ISO_TIMESTAMP_RE.search(r))
+            ts_matches = sum(1 for r in reprs if ISO_TIMESTAMP_DETECT_RE.search(r))
             if ts_matches >= len(reprs) * 0.8:
                 findings.append(build_timestamp_pattern_finding(
                     path=vol.path,
@@ -348,7 +435,7 @@ class PathStabilityProfiler:
 
         # UUID pattern
         if all(t == "str" for t in types):
-            uuid_matches = sum(1 for r in reprs if _UUID_RE.search(r))
+            uuid_matches = sum(1 for r in reprs if UUID_DETECT_RE.search(r))
             if uuid_matches >= len(reprs) * 0.8:
                 findings.append(build_uuid_pattern_finding(
                     path=vol.path,
@@ -361,6 +448,11 @@ class PathStabilityProfiler:
         if all(t in ("int", "float") for t in types) and len(present) >= 2:
             try:
                 # Parse numeric values from repr
+                # Parse numeric values from repr.  value_repr for int/float
+                # types is never truncated in practice (numeric reprs are always
+                # well under the 120-char limit).  If parsing fails (e.g., an
+                # unexpected repr format), the except clause silently skips
+                # numeric pattern detection — acceptable degradation.
                 nums = [float(e.value_repr) for e in present]
                 min_val, max_val = min(nums), max(nums)
                 # Check for epoch-like timestamps
@@ -390,11 +482,23 @@ class PathStabilityProfiler:
 
 @dataclass(frozen=True, slots=True)
 class _PathEntry:
-    """Internal intermediate representation for one path observation."""
+    """Internal intermediate representation for one path observation.
+
+    For generalized list paths (e.g., ``$.items[*].name``), multiple
+    elements may map to the same path in one run.  ``value_hashes``
+    stores the canonical multiset ``tuple(sorted(Counter(hashes).items()))``
+    so that ``[1,1,2]`` and ``[1,2,2]`` are distinguishable.
+    ``value_types`` stores all distinct types observed in this run.
+
+    ``value_hash``, ``value_type``, and ``value_repr`` are representative
+    values (from the first element) used for pattern detection display.
+    """
 
     run_index: int
     value_hash: str
+    value_hashes: tuple[tuple[str, int], ...]
     value_type: str
+    value_types: tuple[str, ...]
     value_repr: str
     is_present: bool
 
