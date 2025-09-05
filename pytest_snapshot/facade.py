@@ -102,13 +102,21 @@ class SnapshotAssertion:
         alignment_registry = self._build_alignment_registry(match_lists_by)
         prepared = self._runtime.prepare(key=key, value=value)
 
-        # Record observation for profiling (post-serialization, post-sanitization)
+        # Record observation for profiling (post-serialization, post-sanitization).
+        # Wrapped in try-except: profiling infrastructure must never break tests.
         if self._observation_collector is not None:
-            self._observation_collector.record(
-                key=key,
-                serialized_text=prepared.actual,
-                serializer_name=prepared.diagnostics.serializer_name,
-            )
+            try:
+                self._observation_collector.record(
+                    key=key,
+                    serialized_text=prepared.actual,
+                    serializer_name=prepared.diagnostics.serializer_name,
+                )
+            except Exception as exc:  # noqa: BLE001 — observation is best-effort
+                import warnings
+                warnings.warn(
+                    f"Snapshot profiling observation failed: {exc}",
+                    stacklevel=2,
+                )
 
         # In profile mode, skip comparison/storage — observe only
         if self._config.profile_mode:
