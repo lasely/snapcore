@@ -151,9 +151,14 @@ def pytest_runtestloop(session: pytest.Session) -> bool | None:
     if session.config.option.collectonly:
         return True
 
+    tw = session.config.get_terminal_writer()
+    tw.line(
+        "\nProfile mode: snapshot assertions disabled, "
+        "collecting observations only"
+    )
+
     for run_idx in range(profile_runs):
         obs_collector.start_run()
-        tw = session.config.get_terminal_writer()
         tw.line(f"\n=== Snapshot Profile Run {run_idx + 1}/{profile_runs} ===")
 
         for i, item in enumerate(session.items):
@@ -163,6 +168,13 @@ def pytest_runtestloop(session: pytest.Session) -> bool | None:
                 raise session.Failed(session.shouldfail)
             if session.shouldstop:
                 raise session.Interrupted(session.shouldstop)
+
+        if session.testsfailed:
+            tw.line(
+                f"\nProfile stopped: {session.testsfailed} test(s) failed "
+                f"in run {run_idx + 1}/{profile_runs}"
+            )
+            break
 
     return True  # Signal that we handled the loop
 
