@@ -231,7 +231,8 @@ def build_non_json_skipped_finding(
         code=INTEL_NON_JSON_SKIPPED,
         message=(
             f"Non-JSON serializer ({serializer_name}), "
-            f"structural analysis skipped"
+            f"structural analysis skipped. "
+            f"Use a JSON serializer for structural profiling"
         ),
         severity="info",
         path="$",
