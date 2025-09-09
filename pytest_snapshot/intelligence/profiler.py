@@ -25,7 +25,6 @@ from .findings import (
     build_order_volatile_finding,
     build_presence_volatile_finding,
     build_shape_volatile_finding,
-    build_stable_path_finding,
     build_timestamp_pattern_finding,
     build_uuid_pattern_finding,
     build_value_volatile_finding,
@@ -35,6 +34,20 @@ from .models import InstabilityFinding, PathVolatility, RunObservation
 
 if TYPE_CHECKING:
     from .models import ObservedPathValue
+
+# -- Tuning constants --------------------------------------------------------
+
+# Confidence scales linearly from 0.0 to 1.0 over this many runs.
+# Matches the default --snapshot-profile-runs value (5).
+_CONFIDENCE_BASE_RUNS = 5
+
+# Fraction of values that must match a pattern (timestamp/UUID)
+# for the pattern finding to be emitted.  0.8 allows 1 non-matching
+# value in 5 runs (e.g., a null placeholder in one run).
+_PATTERN_MATCH_THRESHOLD = 0.8
+
+# Confidence multiplier when fewer than 2 present entries exist.
+_LOW_EVIDENCE_PENALTY = 0.5
 
 # -- Epoch range for numeric timestamp detection -----------------------------
 
@@ -189,7 +202,7 @@ class PathStabilityProfiler:
                     hash_counter = Counter(pv.value_hash for pv in pvs)
                     value_hashes = tuple(sorted(hash_counter.items()))
                     # Collect all types observed at this path in this run
-                    value_types = tuple(sorted({pv.value_type for pv in pvs}))
+                    value_types = frozenset(pv.value_type for pv in pvs)
                     # Representative values for pattern detection
                     rep = pvs[0]
                     entries.append(_PathEntry(
@@ -207,7 +220,7 @@ class PathStabilityProfiler:
                         value_hash="",
                         value_hashes=(),
                         value_type="",
-                        value_types=(),
+                        value_types=frozenset(),
                         value_repr="",
                         is_present=False,
                     ))
@@ -340,18 +353,14 @@ class PathStabilityProfiler:
         entries: list[_PathEntry],
     ) -> float:
         """Compute confidence score based on run count and evidence."""
-        # Base confidence scales linearly from 0.0 to 1.0 over 5 runs.
-        # 5 runs is the default --snapshot-profile-runs value and provides
-        # enough adjacent-pair comparisons (4) for reliable classification.
-        base = min(1.0, total_runs / 5.0)
+        base = min(1.0, total_runs / _CONFIDENCE_BASE_RUNS)
 
         if volatility_class == "stable":
-            return base
+            return round(base, 4)
 
-        # For volatile classifications, adjust by evidence strength
         present_entries = [e for e in entries if e.is_present]
         if len(present_entries) < 2:
-            return base * 0.5
+            return round(base * _LOW_EVIDENCE_PENALTY, 4)
 
         return round(base, 4)
 
@@ -420,29 +429,25 @@ class PathStabilityProfiler:
         reprs = [e.value_repr for e in present]
         types = [e.value_type for e in present]
 
-        # Timestamp pattern (strings matching ISO-8601).
-        # 80% threshold: allows 1 non-matching value in 5 runs (e.g., a null
-        # that got serialized as a placeholder string in one run).
+        # String pattern detection: timestamp and UUID are mutually exclusive.
         if all(t == "str" for t in types):
             ts_matches = sum(1 for r in reprs if ISO_TIMESTAMP_DETECT_RE.search(r))
-            if ts_matches >= len(reprs) * 0.8:
+            if ts_matches >= len(reprs) * _PATTERN_MATCH_THRESHOLD:
                 findings.append(build_timestamp_pattern_finding(
                     path=vol.path,
                     total_runs=total_runs,
                     match_count=ts_matches,
                     confidence=min(vol.confidence, ts_matches / len(reprs)),
                 ))
-
-        # UUID pattern
-        if all(t == "str" for t in types):
-            uuid_matches = sum(1 for r in reprs if UUID_DETECT_RE.search(r))
-            if uuid_matches >= len(reprs) * 0.8:
-                findings.append(build_uuid_pattern_finding(
-                    path=vol.path,
-                    total_runs=total_runs,
-                    match_count=uuid_matches,
-                    confidence=min(vol.confidence, uuid_matches / len(reprs)),
-                ))
+            else:
+                uuid_matches = sum(1 for r in reprs if UUID_DETECT_RE.search(r))
+                if uuid_matches >= len(reprs) * _PATTERN_MATCH_THRESHOLD:
+                    findings.append(build_uuid_pattern_finding(
+                        path=vol.path,
+                        total_runs=total_runs,
+                        match_count=uuid_matches,
+                        confidence=min(vol.confidence, uuid_matches / len(reprs)),
+                    ))
 
         # Numeric drift (int/float values within a small range)
         if all(t in ("int", "float") for t in types) and len(present) >= 2:
@@ -498,7 +503,7 @@ class _PathEntry:
     value_hash: str
     value_hashes: tuple[tuple[str, int], ...]
     value_type: str
-    value_types: tuple[str, ...]
+    value_types: frozenset[str]
     value_repr: str
     is_present: bool
 

@@ -30,7 +30,15 @@ SUGGEST_SANITIZER = "suggest_sanitizer"
 SUGGEST_JSON_MASK = "suggest_json_mask"
 SUGGEST_RELATIONAL_SANITIZER = "suggest_relational_sanitizer"
 
+# Suggestions below this threshold are filtered out.  0.3 keeps only
+# findings backed by ≥2 runs with clear evidence; lower values produce
+# too many weak suggestions that erode user trust.
 _MIN_CONFIDENCE = 0.3
+
+# Confidence penalties for suggestion types less precise than
+# pattern-based sanitizer suggestions.
+_MASK_CONFIDENCE_PENALTY = 0.9
+_RELATIONAL_CONFIDENCE_PENALTY = 0.85
 
 
 class SuggestionEngine:
@@ -55,19 +63,29 @@ class SuggestionEngine:
         suggestions: list[Suggestion] = []
         handled_paths: set[str] = set()
 
-        # Index findings by path for quick lookup
         findings_by_path: dict[str, list[InstabilityFinding]] = defaultdict(list)
         for f in findings:
             findings_by_path[f.path].append(f)
 
-        # 1. Pattern-based suggestions (highest priority)
         for path, path_findings in sorted(findings_by_path.items()):
             pattern_suggestion = self._pattern_suggestion(path, path_findings)
             if pattern_suggestion is not None:
                 suggestions.append(pattern_suggestion)
                 handled_paths.add(path)
 
-        # 2. Mask-based suggestions for remaining volatile paths
+        # Relational sanitizer suggestions (correlated volatile siblings).
+        # Runs before individual masks so that correlated groups get a single
+        # relational suggestion instead of N separate mask suggestions.
+        relational = self._relational_suggestions(
+            findings_by_path, handled_paths, path_volatilities,
+        )
+        suggestions.extend(relational)
+        for s in relational:
+            if s.parameters:
+                for k, v in s.parameters:
+                    if k == "volatile_field":
+                        handled_paths.add(v)
+
         for path, path_findings in sorted(findings_by_path.items()):
             if path in handled_paths:
                 continue
@@ -76,13 +94,6 @@ class SuggestionEngine:
                 suggestions.append(mask_suggestion)
                 handled_paths.add(path)
 
-        # 3. Relational sanitizer suggestions (correlated volatile values)
-        relational = self._relational_suggestions(
-            findings_by_path, handled_paths, path_volatilities,
-        )
-        suggestions.extend(relational)
-
-        # Filter and sort
         suggestions = [s for s in suggestions if s.confidence >= _MIN_CONFIDENCE]
         suggestions.sort(
             key=lambda s: (-s.confidence, s.target_path, s.code),
@@ -99,43 +110,47 @@ class SuggestionEngine:
 
         if INTEL_TIMESTAMP_PATTERN in codes:
             pattern_finding = next(
-                f for f in path_findings if f.code == INTEL_TIMESTAMP_PATTERN
+                (f for f in path_findings if f.code == INTEL_TIMESTAMP_PATTERN),
+                None,
             )
-            return Suggestion(
-                code=SUGGEST_SANITIZER,
-                message=(
-                    f"Add a datetime sanitizer for {path} "
-                    f"(timestamp pattern detected)"
-                ),
-                action_type="sanitize",
-                target_path=path,
-                confidence=pattern_finding.confidence,
-                evidence_findings=tuple(sorted(
-                    f.code for f in path_findings
-                    if f.code in (INTEL_VALUE_VOLATILE, INTEL_TIMESTAMP_PATTERN)
-                )),
-                parameters=(("sanitizer_type", "datetime"),),
-            )
+            if pattern_finding is not None:
+                return Suggestion(
+                    code=SUGGEST_SANITIZER,
+                    message=(
+                        f"Add a datetime sanitizer for {path} "
+                        f"(timestamp pattern detected)"
+                    ),
+                    action_type="sanitize",
+                    target_path=path,
+                    confidence=pattern_finding.confidence,
+                    evidence_findings=tuple(sorted(
+                        f.code for f in path_findings
+                        if f.code in (INTEL_VALUE_VOLATILE, INTEL_TIMESTAMP_PATTERN)
+                    )),
+                    parameters=(("sanitizer_type", "datetime"),),
+                )
 
         if INTEL_UUID_PATTERN in codes:
             pattern_finding = next(
-                f for f in path_findings if f.code == INTEL_UUID_PATTERN
+                (f for f in path_findings if f.code == INTEL_UUID_PATTERN),
+                None,
             )
-            return Suggestion(
-                code=SUGGEST_SANITIZER,
-                message=(
-                    f"Add a UUID sanitizer for {path} "
-                    f"(UUID pattern detected)"
-                ),
-                action_type="sanitize",
-                target_path=path,
-                confidence=pattern_finding.confidence,
-                evidence_findings=tuple(sorted(
-                    f.code for f in path_findings
-                    if f.code in (INTEL_VALUE_VOLATILE, INTEL_UUID_PATTERN)
-                )),
-                parameters=(("sanitizer_type", "uuid"),),
-            )
+            if pattern_finding is not None:
+                return Suggestion(
+                    code=SUGGEST_SANITIZER,
+                    message=(
+                        f"Add a UUID sanitizer for {path} "
+                        f"(UUID pattern detected)"
+                    ),
+                    action_type="sanitize",
+                    target_path=path,
+                    confidence=pattern_finding.confidence,
+                    evidence_findings=tuple(sorted(
+                        f.code for f in path_findings
+                        if f.code in (INTEL_VALUE_VOLATILE, INTEL_UUID_PATTERN)
+                    )),
+                    parameters=(("sanitizer_type", "uuid"),),
+                )
 
         return None
 
@@ -160,7 +175,7 @@ class SuggestionEngine:
             ),
             action_type="json_mask",
             target_path=path,
-            confidence=best.confidence * 0.9,  # slightly lower than pattern-based
+            confidence=best.confidence * _MASK_CONFIDENCE_PENALTY,
             evidence_findings=(INTEL_VALUE_VOLATILE,),
             parameters=(("mask_value", "<MASKED>"),),
         )
@@ -177,7 +192,6 @@ class SuggestionEngine:
         value-volatile, a relational sanitizer might be more appropriate
         than individual masks.
         """
-        # Group volatile paths by parent
         parent_groups: dict[str, list[str]] = defaultdict(list)
         for pv in path_volatilities:
             if pv.volatility_class != "value_volatile":
@@ -192,7 +206,6 @@ class SuggestionEngine:
         for parent, child_paths in sorted(parent_groups.items()):
             if len(child_paths) < 2:
                 continue
-            # Multiple correlated volatile paths under the same parent
             confidences = []
             for cp in child_paths:
                 for f in findings_by_path.get(cp, []):
@@ -209,7 +222,7 @@ class SuggestionEngine:
                 ),
                 action_type="relational_sanitize",
                 target_path=parent,
-                confidence=round(avg_confidence * 0.85, 4),
+                confidence=round(avg_confidence * _RELATIONAL_CONFIDENCE_PENALTY, 4),
                 evidence_findings=(INTEL_VALUE_VOLATILE,),
                 parameters=tuple(
                     ("volatile_field", p) for p in sorted(child_paths)
@@ -229,7 +242,6 @@ def _parent_path(path: str) -> str:
     """
     if "." not in path and "[" not in path:
         return ""
-    # Find last dot not inside brackets
     last_dot = path.rfind(".")
     if last_dot <= 0:
         return ""
