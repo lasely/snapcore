@@ -203,22 +203,6 @@ def build_numeric_drift_finding(
     )
 
 
-def build_stable_path_finding(
-    *,
-    path: str,
-    total_runs: int,
-) -> InstabilityFinding:
-    """Path is completely stable across all runs (informational)."""
-    return InstabilityFinding(
-        code=INTEL_STABLE_PATH,
-        message=f"Path {path} stable across {total_runs} runs",
-        severity="info",
-        path=path,
-        volatility_class="stable",
-        evidence=(f"Stable across {total_runs} runs",),
-        confidence=1.0,
-    )
-
 
 def build_non_json_skipped_finding(
     *,
