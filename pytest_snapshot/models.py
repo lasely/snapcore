@@ -13,6 +13,12 @@ class SnapshotKey:
     test_name: str
     snapshot_name: str
 
+    def format_test_id(self) -> str:
+        """Return ``module::class::test`` or ``module::test`` string."""
+        if self.class_name:
+            return f"{self.module}::{self.class_name}::{self.test_name}"
+        return f"{self.module}::{self.test_name}"
+
 
 @dataclass(frozen=True, slots=True)
 class AssertionDiagnostics:

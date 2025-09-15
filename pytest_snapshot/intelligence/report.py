@@ -71,9 +71,7 @@ class IntelligenceReport:
     def _render_target_terminal(self, report: AnalysisReport) -> list[str]:
         """Render one target's analysis for the terminal."""
         key = report.key
-        test_id = f"{key.module}::{key.test_name}"
-        if key.class_name:
-            test_id = f"{key.module}::{key.class_name}::{key.test_name}"
+        test_id = key.format_test_id()
 
         # Summary counts
         summary = dict(report.summary)
@@ -117,12 +115,9 @@ class IntelligenceReport:
     def _serialize_report(self, report: AnalysisReport) -> dict:
         """Serialize one AnalysisReport to a JSON-compatible dict."""
         key = report.key
-        test_id = f"{key.module}::{key.test_name}"
-        if key.class_name:
-            test_id = f"{key.module}::{key.class_name}::{key.test_name}"
 
         return {
-            "test_id": test_id,
+            "test_id": key.format_test_id(),
             "snapshot_name": key.snapshot_name,
             "total_runs": report.total_runs,
             "path_volatilities": [
@@ -179,5 +174,13 @@ class IntelligenceReport:
             "evidence_findings": list(s.evidence_findings),
         }
         if s.parameters is not None:
-            data["parameters"] = dict(s.parameters)
+            # Group duplicate keys into arrays to preserve all values.
+            # Single-valued keys stay as strings for backward compatibility.
+            grouped: dict[str, list[str]] = {}
+            for k, v in s.parameters:
+                grouped.setdefault(k, []).append(v)
+            data["parameters"] = {
+                k: vs[0] if len(vs) == 1 else vs
+                for k, vs in grouped.items()
+            }
         return data
