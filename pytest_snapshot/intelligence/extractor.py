@@ -77,13 +77,25 @@ def _walk(
         for i, elem in enumerate(obj):
             child_path = f"{path}[{i}]"
             _walk(elem, child_path, results, max_depth, depth + 1)
-        # Emit a synthetic entry for the list itself to capture ordering
+        # Emit synthetic entries for the list to capture ordering and content.
+        # [__order] hashes the ordered sequence (detects reordering).
+        # [__content] hashes the multiset (detects content changes).
+        # The profiler uses [__content] to distinguish reorder from content
+        # change: order_volatile is only valid when content is stable.
         gen_path = generalize_indices(path)
         order_hash = _compute_list_order_hash(obj)
+        content_hash = _compute_list_multiset_hash(obj)
         results.append(ObservedPathValue(
-            path=f"{gen_path}.__order__",
+            path=f"{gen_path}[__order]",
             value_hash=order_hash,
             value_type="list_order",
+            value_repr=f"[...{len(obj)} items]",
+            is_present=True,
+        ))
+        results.append(ObservedPathValue(
+            path=f"{gen_path}[__content]",
+            value_hash=content_hash,
+            value_type="list_content",
             value_repr=f"[...{len(obj)} items]",
             is_present=True,
         ))
@@ -102,7 +114,7 @@ def _walk(
 def compute_value_hash(value: Any) -> str:
     """Compute a deterministic hash for a JSON-compatible scalar value.
 
-    Uses SHA-256 of a canonical string representation.  The representation
+    Uses MD5 of a canonical string representation.  The representation
     distinguishes types: ``True`` (bool) and ``1`` (int) produce different
     hashes.
 
@@ -110,7 +122,7 @@ def compute_value_hash(value: Any) -> str:
     hashing to avoid raising exceptions during profiling.
     """
     canonical = _canonical_repr(value)
-    return hashlib.sha256(canonical.encode("utf-8")).hexdigest()[:16]
+    return hashlib.md5(canonical.encode("utf-8")).hexdigest()[:16]
 
 
 def _canonical_repr(value: Any) -> str:
@@ -137,15 +149,25 @@ def _canonical_repr(value: Any) -> str:
 def _compute_list_order_hash(items: list[Any]) -> str:
     """Hash the ordered sequence of child element hashes.
 
-    Used to detect order volatility: if the multiset of child hashes
-    is the same across runs but the ordered hash differs, the list
-    exhibits order instability.
+    Used together with ``_compute_list_multiset_hash`` to detect order
+    volatility.  If the multiset hash is stable but the order hash
+    differs across runs, the list exhibits order instability.
     """
-    child_hashes = []
-    for item in items:
-        child_hashes.append(_shallow_hash(item))
+    child_hashes = [_shallow_hash(item) for item in items]
     combined = "|".join(child_hashes)
-    return hashlib.sha256(combined.encode("utf-8")).hexdigest()[:16]
+    return hashlib.md5(combined.encode("utf-8")).hexdigest()[:16]
+
+
+def _compute_list_multiset_hash(items: list[Any]) -> str:
+    """Hash the sorted (order-independent) multiset of child element hashes.
+
+    The sorted join is order-independent, so two lists with the same
+    elements in different order produce the same multiset hash.
+    Used by the profiler to distinguish reorder from content change.
+    """
+    child_hashes = sorted(_shallow_hash(item) for item in items)
+    combined = "|".join(child_hashes)
+    return hashlib.md5(combined.encode("utf-8")).hexdigest()[:16]
 
 
 def _shallow_hash(value: Any) -> str:
@@ -157,9 +179,9 @@ def _shallow_hash(value: Any) -> str:
     if isinstance(value, (dict, list)):
         try:
             canonical = json.dumps(value, sort_keys=True, ensure_ascii=False)
-            return hashlib.sha256(canonical.encode("utf-8")).hexdigest()[:16]
+            return hashlib.md5(canonical.encode("utf-8")).hexdigest()[:16]
         except (TypeError, ValueError):
-            return hashlib.sha256(repr(value).encode("utf-8")).hexdigest()[:16]
+            return hashlib.md5(repr(value).encode("utf-8")).hexdigest()[:16]
     return compute_value_hash(value)
 
 
