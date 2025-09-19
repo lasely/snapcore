@@ -664,3 +664,45 @@ class TestTotalRunsParameter:
         vol_map = _volatility_map(result)
         # 3/3 → stable
         assert vol_map["$.x"] == "stable"
+
+
+# ===================================================================
+# Boundary tests for _compute_confidence (TEST-4)
+# ===================================================================
+
+
+class TestConfidenceBoundary:
+    """Edge cases for confidence scoring."""
+
+    def test_single_run_confidence(self):
+        """1 run → base = 0.2, stable returns 0.2."""
+        payloads = [json.dumps({"x": 1})]
+        obs = _make_observations(payloads)
+        result = PathStabilityProfiler(min_runs=1).profile(obs)
+        for vol in result.path_volatilities:
+            if vol.path == "$.x":
+                assert vol.confidence == round(1 / 5, 4)
+
+    def test_presence_volatile_single_present_entry(self):
+        """presence_volatile with 1 present entry gets low-evidence penalty."""
+        payloads = [json.dumps({"x": 1})]
+        obs = _make_observations(payloads)
+        # total_runs=3 but only 1 observation → presence_volatile
+        profiler = PathStabilityProfiler(min_runs=1)
+        result = profiler.profile(obs, total_runs=3)
+
+        vol_map = _volatility_map(result)
+        assert vol_map["$.x"] == "presence_volatile"
+        for vol in result.path_volatilities:
+            if vol.path == "$.x":
+                # base = 3/5 = 0.6, penalty 0.5 → 0.3
+                assert vol.confidence == round(3 / 5 * 0.5, 4)
+
+    def test_confidence_capped_at_one(self):
+        """10 runs → base = min(1.0, 10/5) = 1.0."""
+        payloads = [json.dumps({"x": i}) for i in range(10)]
+        obs = _make_observations(payloads)
+        result = PathStabilityProfiler(min_runs=1).profile(obs)
+        for vol in result.path_volatilities:
+            if vol.path == "$.x":
+                assert vol.confidence == 1.0
