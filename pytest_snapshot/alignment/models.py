@@ -56,7 +56,7 @@ class AlignmentKey:
     ``fields=("region", "number")``, an element ``{"region": "US", "number": 42}``
     produces ``values=("US", 42)``.
 
-    AlignmentKey is hashable by design — it is used as a dict key to
+    AlignmentKey is hashable by design -- it is used as a dict key to
     build the expected-to-actual element mapping during alignment execution.
     """
 

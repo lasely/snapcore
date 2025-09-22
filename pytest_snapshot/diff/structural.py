@@ -164,7 +164,7 @@ class StructuralDiffRenderer:
 
         The runtime path uses concrete indices (e.g., ``$.regions[3].orders``)
         but rules are registered with wildcards (``$.regions[*].orders``),
-        so we try: exact normalized → generalized indices → generalized brackets.
+        so we try: exact normalized -> generalized indices -> generalized brackets.
         """
         if self._alignment_registry is None:
             return None
@@ -231,8 +231,6 @@ class StructuralDiffRenderer:
             label = self._element_label(element, result.rule.fields, idx)
             changes.append(KeyAdded(f"{path}[{label}]", element))
 
-        # Surface alignment findings so users understand why matching was
-        # partial or degraded (duplicate keys, missing fields, etc.).
         for finding in result.findings:
             self._alignment_warnings.append(finding.message)
 

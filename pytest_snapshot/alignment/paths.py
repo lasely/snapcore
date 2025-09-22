@@ -11,10 +11,6 @@ import re
 
 _INDEX_RE = re.compile(r"\[\d+\]")
 
-# Match any bracket expression, respecting quoted strings inside brackets.
-# Alternation order: double-quoted string | single-quoted string | non-quote-non-bracket char.
-# This ensures a ']' inside a quoted value (e.g. [name="a]b"]) does not
-# prematurely terminate the bracket expression.
 _BRACKET_RE = re.compile(r"""\[(?:"[^"]*"|'[^']*'|[^"'\]])*\]""")
 
 

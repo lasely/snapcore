@@ -1,13 +1,13 @@
-"""Alignment executor — matches list elements by identity keys.
+"""Alignment executor -- matches list elements by identity keys.
 
 Given two lists (expected and actual) and an ``AlignmentRule`` declaring
 which dict fields form the identity key, ``align_lists`` partitions every
 element index into one of three buckets:
 
-* **matched** — same key appears exactly once in both lists
-* **unmatched_expected** — key appears in expected but not actual (or is
+* **matched** -- same key appears exactly once in both lists
+* **unmatched_expected** -- key appears in expected but not actual (or is
   ambiguous due to duplicates / extraction failure)
-* **unmatched_actual** — key appears in actual but not expected (same
+* **unmatched_actual** -- key appears in actual but not expected (same
   caveats)
 
 The executor is a pure function: it reads the two lists and the rule,
@@ -17,7 +17,7 @@ Complexity
 ----------
 Key extraction is O(n + m) where n = len(expected), m = len(actual).
 Index-mapping construction is O(n + m).  Matching is O(min(n, m)).
-Total: **O(n + m)** time and space — acceptable for lists of 1000+
+Total: **O(n + m)** time and space -- acceptable for lists of 1000+
 elements and a strict improvement over the O(n * m) LCS fallback.
 """
 
@@ -248,20 +248,9 @@ def _extract_keys(
         if extraction_failed:
             continue
 
-        # Elements with any missing key field are unalignable: they
-        # cannot produce a valid identity and must not participate in
-        # keyed matching.  Without this guard, two elements that both
-        # lack the key field would share the sentinel key (_MISSING,)
-        # and be falsely treated as a matched pair.
         if any(v is _MISSING for v in field_values):
             continue
 
-        # Type-strict comparison note: Python's tuple equality already
-        # distinguishes 1 from True (int vs bool) via our key construction
-        # because we preserve the original value types.  However, standard
-        # dict hashing makes hash(1) == hash(True), so they CAN collide
-        # in a dict.  We handle this by using type-prefixed wrappers for
-        # bool values to prevent hash collisions between 1/True and 0/False.
         wrapped = tuple(_wrap_for_type_safety(v) for v in field_values)
         keys[idx] = AlignmentKey(values=wrapped)
 

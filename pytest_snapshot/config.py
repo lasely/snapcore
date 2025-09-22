@@ -29,3 +29,6 @@ class SnapshotConfig:
     repr_policy: str = "warn"
     sanitizer_profile: str = "none"
     xdist_policy: str = "fail"
+    profile_mode: bool = False
+    profile_runs: int = 5
+    profile_output_dir: Path | None = None

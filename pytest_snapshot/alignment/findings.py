@@ -11,14 +11,6 @@ from typing import Any
 
 from .models import AlignmentFinding
 
-# -- Ambiguity codes -------------------------------------------------------
-#
-# ALIGNMENT_KEY_MISSING       An element lacks one or more declared key fields.
-# ALIGNMENT_KEY_DUPLICATE     Two+ elements in the same list share a key value.
-# ALIGNMENT_KEY_UNHASHABLE    A key field value is not hashable (dict, list).
-# ALIGNMENT_ELEMENT_TYPE      A list element is not a dict; key extraction fails.
-# ALIGNMENT_PATH_TYPE         The value at the registered path is not a list.
-# ALIGNMENT_PARTIAL           Some elements matched, others did not (informational).
 
 ALIGNMENT_KEY_MISSING = "alignment_key_missing"
 ALIGNMENT_KEY_DUPLICATE = "alignment_key_duplicate"
