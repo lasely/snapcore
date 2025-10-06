@@ -8,6 +8,13 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
+from .builtins import DatetimeSanitizer, PathSanitizer, UuidSanitizer
+from .relational import (
+    RelationalDatetimeSanitizer,
+    RelationalPathSanitizer,
+    RelationalUuidSanitizer,
+)
+
 if TYPE_CHECKING:
     from ..protocols import Sanitizer
 
@@ -24,17 +31,9 @@ def load_profile_sanitizers(profile: str) -> list[Sanitizer]:
         return []
 
     if profile == "standard":
-        from .builtins import UuidSanitizer, DatetimeSanitizer, PathSanitizer
-
         return [UuidSanitizer(), DatetimeSanitizer(), PathSanitizer()]
 
     if profile == "relational":
-        from .relational import (
-            RelationalUuidSanitizer,
-            RelationalDatetimeSanitizer,
-            RelationalPathSanitizer,
-        )
-
         return [
             RelationalUuidSanitizer(),
             RelationalDatetimeSanitizer(),

@@ -13,6 +13,7 @@ from pathlib import Path
 from typing import Any, TYPE_CHECKING
 
 from .config import SnapshotConfig
+from .diff.structural import StructuralDiffRenderer
 from .exceptions import SerializerNotFoundError
 from .models import AssertionDiagnostics, DiffRenderResult, PolicyFinding, SnapshotKey
 from .policy import (
@@ -206,8 +207,6 @@ class AssertionRuntime:
         alignment_registry: AlignmentRegistry | None = None,
     ) -> DiffRenderResult:
         """Render a diff using metadata-aware renderer APIs when available."""
-        from .diff.structural import StructuralDiffRenderer
-
         if isinstance(self._differ, StructuralDiffRenderer) and alignment_registry is not None:
             return self._differ.render_with_metadata(
                 expected, actual, alignment_registry=alignment_registry,

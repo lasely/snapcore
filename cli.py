@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import fnmatch
+import subprocess
 import sys
 from pathlib import Path
 
@@ -158,7 +159,6 @@ def _collect_test_dirs(snapshot_dir: Path) -> set[str]:
     except ImportError:
         raise _PytestUnavailable()
 
-    import subprocess
     result = subprocess.run(
         [sys.executable, "-m", "pytest", "--collect-only", "-q", "--no-header"],
         capture_output=True,

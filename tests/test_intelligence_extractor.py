@@ -6,6 +6,7 @@ import json
 
 import pytest
 
+from pytest_snapshot.alignment.paths import generalize_indices
 from pytest_snapshot.intelligence.extractor import (
     compute_value_hash,
     extract_path_values,
@@ -176,14 +177,11 @@ class TestAlignmentContract:
 
     def test_generalize_indices_format(self):
         """Extractor paths use [*] for list indices, matching alignment module."""
-        from pytest_snapshot.alignment.paths import generalize_indices
         assert generalize_indices("$.items[0].name") == "$.items[*].name"
         assert generalize_indices("$.a[0][1].b") == "$.a[*][*].b"
 
     def test_extracted_paths_match_alignment_format(self):
         """Paths emitted by extract_path_values use alignment's generalized format."""
-        from pytest_snapshot.alignment.paths import generalize_indices
-
         data = json.dumps({"items": [{"name": "a"}, {"name": "b"}]})
         pvs = extract_path_values(data)
         scalar_paths = [pv.path for pv in pvs if not pv.path.endswith("]")]

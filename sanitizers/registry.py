@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import difflib
+
 from ..protocols import Sanitizer
 
 
@@ -67,7 +69,5 @@ def _count_changes(before: str, after: str) -> int:
     Uses difflib SequenceMatcher to count contiguous changed regions,
     which closely approximates per-replacement counts.
     """
-    import difflib
-
     matcher = difflib.SequenceMatcher(None, before, after, autojunk=False)
     return sum(1 for tag, *_ in matcher.get_opcodes() if tag != "equal")

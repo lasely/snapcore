@@ -17,5 +17,11 @@ snapshot = "pytest_snapshot.plugin"
 [project.scripts]
 pytest-snapshot = "pytest_snapshot.cli:main"
 
+[tool.hatch.build.targets.wheel]
+packages = ["."]
+
+[tool.hatch.build.targets.wheel.sources]
+"." = "pytest_snapshot"
+
 [tool.pytest.ini_options]
 testpaths = ["tests"]

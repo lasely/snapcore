@@ -10,8 +10,12 @@ from .config import SnapshotConfig
 from .diff import StructuralDiffRenderer, TextDiffRenderer
 from .facade import SnapshotAssertion, TestLocation
 from .policy import build_orphan_policy_findings
+from .intelligence.analyzer import ProfileAnalyzer
 from .intelligence.collector import ObservationCollector
+from .intelligence.report import IntelligenceReport
 from .review.collector import SnapshotCollector
+from .review.report import ReviewReport
+from .review.session import ReviewSession
 from .sanitizers import SanitizerRegistry
 from .sanitizers.json_masks import JsonMaskApplicator
 from .sanitizers.profiles import load_profile_sanitizers
@@ -231,7 +235,6 @@ def pytest_sessionfinish(session: pytest.Session, exitstatus: int) -> None:
         return
 
     if review_ci:
-        from .review.report import ReviewReport
         report = ReviewReport(
             collector.pending,
             policy_findings=collector.policy_findings,
@@ -240,8 +243,6 @@ def pytest_sessionfinish(session: pytest.Session, exitstatus: int) -> None:
         session.exitstatus = 1
 
     elif review:
-        from .review.session import ReviewSession
-
         real_out = getattr(sys, "__stdout__", None) or sys.stdout
         real_in = getattr(sys, "__stdin__", None) or sys.stdin
 
@@ -309,9 +310,6 @@ def snapshot(request: pytest.FixtureRequest) -> SnapshotAssertion:
 
 def _run_profile_analysis(session: pytest.Session) -> None:
     """Run profiler, suggestion engine, and emit report after profile runs."""
-    from .intelligence.analyzer import ProfileAnalyzer
-    from .intelligence.report import IntelligenceReport
-
     config = session.config
     obs_collector: ObservationCollector = config.stash[_observation_collector_key]
 

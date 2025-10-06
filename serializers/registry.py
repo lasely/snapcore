@@ -4,6 +4,9 @@ from typing import Any
 
 from ..exceptions import SerializerNotFoundError
 from ..protocols import Serializer
+from .json import JsonSerializer
+from .repr import ReprSerializer
+from .text import TextSerializer
 
 
 class SerializerRegistry:
@@ -70,10 +73,6 @@ class SerializerRegistry:
 
 def create_default_registry() -> SerializerRegistry:
     """Create a registry pre-populated with built-in serializers."""
-    from .text import TextSerializer
-    from .json import JsonSerializer
-    from .repr import ReprSerializer
-
     registry = SerializerRegistry()
     registry.register(JsonSerializer(), priority=10)
     registry.register(TextSerializer(), priority=5)

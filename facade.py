@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import warnings
 from dataclasses import dataclass
 from typing import Any, TYPE_CHECKING
 
@@ -9,6 +10,7 @@ from .exceptions import MissingSnapshotError, SnapshotError, SnapshotMismatchErr
 from .models import MismatchDetail, SnapshotKey
 from .policy import build_missing_snapshot_blocked_finding
 from .protocols import DiffRenderer, StorageBackend
+from .review.collector import ChangeType, PendingChange
 from .runtime import AssertionRuntime
 from .sanitizers import SanitizerRegistry
 from .sanitizers.json_masks import JsonMaskApplicator
@@ -110,7 +112,6 @@ class SnapshotAssertion:
                     serializer_name=prepared.diagnostics.serializer_name,
                 )
             except Exception as exc:
-                import warnings
                 warnings.warn(
                     f"Snapshot profiling observation failed: {exc}",
                     stacklevel=2,
@@ -139,8 +140,6 @@ class SnapshotAssertion:
         )
 
         if self._review_mode and self._collector is not None:
-            from .review.collector import ChangeType, PendingChange
-
             self._collector.add(
                 PendingChange(
                     key=key,
@@ -166,8 +165,6 @@ class SnapshotAssertion:
     def _handle_missing_snapshot(self, prepared) -> None:
         missing_policy = self._effective_missing_policy
         if missing_policy == "review" and self._collector is not None:
-            from .review.collector import ChangeType, PendingChange
-
             self._collector.add(
                 PendingChange(
                     key=prepared.key,

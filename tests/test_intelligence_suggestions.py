@@ -26,6 +26,8 @@ from pytest_snapshot.intelligence.suggestions import (
     SUGGEST_SANITIZER,
     SuggestionEngine,
 )
+from pytest_snapshot.intelligence.models import AnalysisReport, Suggestion
+from pytest_snapshot.intelligence.report import IntelligenceReport
 from pytest_snapshot.models import SnapshotKey
 
 
@@ -465,9 +467,6 @@ class TestRelationalParametersSerialization:
 
     def test_all_volatile_fields_preserved_in_sidecar(self):
         """Multiple volatile_field entries must not collapse to one in JSON."""
-        from pytest_snapshot.intelligence.report import IntelligenceReport
-        from pytest_snapshot.intelligence.models import AnalysisReport, Suggestion
-
         key = SnapshotKey(
             module="test_mod", class_name=None,
             test_name="test_fn", snapshot_name="0",
